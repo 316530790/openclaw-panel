@@ -101,15 +101,24 @@ function runOpenclaw(args) {
 }
 
 // ─────────────────────────────────────────────
-// 配置读写工具
+// 配置读写工具（带缓存）
 // ─────────────────────────────────────────────
+let _configCache = null;
+let _configMtimeMs = 0;
+
 function readConfig() {
   try {
+    const stat = fs.statSync(CONFIG_PATH);
+    if (_configCache && stat.mtimeMs === _configMtimeMs) return _configCache;
     const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-    try { return JSON.parse(raw); } catch {
-      if (JSON5) return JSON5.parse(raw);
-      throw new Error('配置文件解析失败（JSON5 格式需要安装 json5 包）');
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch {
+      if (JSON5) parsed = JSON5.parse(raw);
+      else throw new Error('配置文件解析失败（JSON5 格式需要安装 json5 包）');
     }
+    _configCache = parsed;
+    _configMtimeMs = stat.mtimeMs;
+    return parsed;
   } catch (e) {
     if (e.code === 'ENOENT') return null;
     throw e;
@@ -150,6 +159,9 @@ function patchConfig(pathArr, value) {
   const cfg = readConfig() || {};
   setNestedValue(cfg, pathArr, value);
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+  // 清除缓存以确保下次读取最新
+  _configCache = null;
+  _configMtimeMs = 0;
   return cfg;
 }
 
@@ -242,8 +254,9 @@ const MIME = {
   '.svg':  'image/svg+xml',
 };
 
-function serveStatic(req, res) {
-  let filePath = path.join(PUBLIC_DIR, req.url === '/' ? '/index.html' : req.url);
+function serveStatic(req, res, pathname) {
+  const safePath = pathname || (req.url === '/' ? '/index.html' : req.url.split('?')[0]);
+  let filePath = path.join(PUBLIC_DIR, safePath === '/' ? '/index.html' : safePath);
   // 防止路径穿越
   if (!filePath.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(filePath, (err, data) => {
@@ -385,8 +398,61 @@ async function handleApi(req, res, pathname, params) {
   if (req.method === 'POST' && pathname === '/api/cmd/restart') {
     return handleCmdRestart(req, res);
   }
+  if (req.method === 'POST' && pathname === '/api/cmd/stop') {
+    return handleCmdStop(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/cmd/start') {
+    return handleCmdStart(req, res);
+  }
   if (req.method === 'POST' && pathname === '/api/cmd/doctor') {
     return handleCmdDoctor(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/cmd/upgrade') {
+    return handleCmdUpgrade(req, res);
+  }
+
+  // ── MCP 服务器管理 ────────────────────────
+  if (req.method === 'GET' && pathname === '/api/mcp') {
+    return handleGetMcp(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/mcp') {
+    return handleSaveMcpServer(req, res);
+  }
+  if (req.method === 'DELETE' && pathname.startsWith('/api/mcp/')) {
+    const id = decodeURIComponent(pathname.slice('/api/mcp/'.length));
+    return handleDeleteMcpServer(req, res, id);
+  }
+
+  // ── Sandbox 配置 ──────────────────────────
+  if (req.method === 'GET' && pathname === '/api/sandbox') {
+    return handleGetSandbox(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/sandbox') {
+    return handleSaveSandbox(req, res);
+  }
+
+  // ── Hooks 配置 ────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/hooks') {
+    return handleGetHooks(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/hooks') {
+    return handleSaveHooks(req, res);
+  }
+
+  // ── Memory 配置 ───────────────────────────
+  if (req.method === 'GET' && pathname === '/api/memory') {
+    return handleGetMemory(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/memory') {
+    return handleSaveMemory(req, res);
+  }
+
+  // ── Tools 高级配置 ────────────────────────
+  if (req.method === 'GET' && pathname === '/api/tools/advanced') {
+    return handleGetToolsAdvanced(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/tools/advanced') {
+    return handleSaveToolsAdvanced(req, res);
   }
 
   sendError(res, '接口不存在', 404);
@@ -931,29 +997,231 @@ function handleLogsStream(req, res, params) {
 // ─────────────────────────────────────────────
 // API 实现 — 运维命令
 // ─────────────────────────────────────────────
-async function handleCmdRestart(req, res) {
-  try {
-    const bin = getOpenClawBinary();
-    exec(`${bin} gateway restart`, { timeout: 15000, env: process.env }, (err) => {
-      if (err && err.code !== 0) {
-        // Gateway 重启会断开连接，这里 err 不一定代表失败
-      }
+function getOcCmd(sub) {
+  const isWin = os.platform() === 'win32';
+  const bin = isWin ? 'openclaw.cmd' : 'openclaw';
+  return { cmd: `${bin} ${sub}`, shell: isWin ? 'powershell' : true };
+}
+
+// 查找 openclaw gateway 进程的 PID（不包含自身 panel server）
+function findGatewayPids(callback) {
+  const platform = os.platform();
+  if (platform === 'win32') {
+    // tasklist 比 wmic 快 10 倍
+    exec('tasklist /FI "IMAGENAME eq node.exe" /FO CSV /NH', { windowsHide: true, timeout: 5000 }, (err, stdout) => {
+      if (err) return callback([]);
+      // 用 wmic 获取带命令行的进程 (仅做 PID 匹配)
+      exec('wmic process where "name like \'%node%\'" get processid,commandline /format:csv', { windowsHide: true, timeout: 8000 }, (e2, out2) => {
+        if (e2 || !out2) return callback([]);
+        const pids = [];
+        out2.split('\n').forEach(line => {
+          if (line.includes('openclaw') && line.includes('gateway') && !line.includes('server.js')) {
+            const m = line.match(/(\d+)\s*$/);
+            if (m) pids.push(m[1]);
+          }
+        });
+        callback(pids);
+      });
     });
-    sendJson(res, { ok: true, message: 'Gateway 重启命令已发送' });
-  } catch (e) {
-    sendError(res, e.message);
+  } else {
+    exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', { timeout: 5000 }, (err, stdout) => {
+      if (err || !stdout) return callback([]);
+      callback(stdout.split('\n').map(s => s.trim()).filter(Boolean));
+    });
   }
 }
 
-async function handleCmdDoctor(req, res) {
+function handleCmdRestart(req, res) {
+  // 先返回响应，再执行操作（避免用户等待）
+  sendJson(res, { success: true, message: 'Gateway 重启命令已发送' });
+  findGatewayPids(pids => {
+    pids.forEach(pid => {
+      try { process.kill(parseInt(pid)); } catch (e) {
+        if (os.platform() === 'win32') {
+          try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) {}
+        }
+      }
+    });
+    setTimeout(() => {
+      const { cmd, shell } = getOcCmd('gateway run');
+      const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+      try { oc.unref(); } catch {}
+    }, 500);
+  });
+}
+
+function handleCmdStop(req, res) {
+  sendJson(res, { success: true, message: 'Gateway 停止命令已发送' });
+  findGatewayPids(pids => {
+    if (pids.length === 0) return;
+    pids.forEach(pid => {
+      try { process.kill(parseInt(pid)); } catch (e) {
+        if (os.platform() === 'win32') {
+          try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) {}
+        }
+      }
+    });
+  });
+}
+
+function handleCmdStart(req, res) {
   try {
-    const stdout = await runOpenclaw(['doctor', '--json']);
-    let result;
-    try { result = JSON.parse(stdout); } catch { result = { raw: stdout }; }
-    sendJson(res, { ok: true, result });
+    const { cmd, shell } = getOcCmd('gateway run');
+    const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+    oc.unref();
+    sendJson(res, { success: true, message: 'Gateway start command sent' });
   } catch (e) {
-    sendJson(res, { ok: false, error: e.message });
+    sendError(res, e.message, 500);
   }
+}
+
+function handleCmdDoctor(req, res) {
+  const { cmd, shell } = getOcCmd('doctor --fix');
+  exec(cmd, { timeout: 30000, shell }, (err, stdout, stderr) => {
+    sendJson(res, {
+      success: !err,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      error: err ? err.message : undefined,
+    });
+  });
+}
+
+function handleCmdUpgrade(req, res) {
+  const isWin = os.platform() === 'win32';
+  const shell = isWin ? 'powershell' : true;
+  exec('npm view openclaw version', { timeout: 15000, shell }, (err, stdout) => {
+    if (err) {
+      return sendJson(res, { success: false, error: err.message });
+    }
+    const latestVer = (stdout || '').trim();
+    const verCmd = isWin ? 'openclaw.cmd --version' : 'openclaw --version';
+    exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
+      const currentVer = (stdout2 || '').trim();
+      const needsUpdate = latestVer && currentVer && latestVer !== currentVer;
+      sendJson(res, {
+        success: true,
+        latest: latestVer,
+        current: currentVer,
+        needsUpdate,
+        stdout: `Current: ${currentVer || 'unknown'}\nLatest: ${latestVer || 'unknown'}\n${needsUpdate ? 'Update available: npm update -g openclaw' : 'Already up to date'}`,
+      });
+    });
+  });
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — MCP 服务器管理
+// ─────────────────────────────────────────────
+function handleGetMcp(req, res) {
+  const cfg = readConfig();
+  const servers = (cfg && cfg.mcp && cfg.mcp.servers) || {};
+  sendJson(res, servers);
+}
+
+async function handleSaveMcpServer(req, res) {
+  const body = await readBody(req);
+  const { id, config: srvCfg } = body;
+  if (!id) return sendError(res, 'id 是必填项', 400);
+  try {
+    patchConfig(['mcp', 'servers', id], srvCfg || {});
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+async function handleDeleteMcpServer(req, res, id) {
+  try {
+    const cfg = readConfig() || {};
+    if (cfg.mcp && cfg.mcp.servers && cfg.mcp.servers[id]) {
+      delete cfg.mcp.servers[id];
+      try { fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak'); } catch {}
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+      _configCache = null; _configMtimeMs = 0;
+    }
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — Sandbox 配置
+// ─────────────────────────────────────────────
+function handleGetSandbox(req, res) {
+  const cfg = readConfig();
+  sendJson(res, redactConfig((cfg && cfg.sandbox) || {}));
+}
+
+async function handleSaveSandbox(req, res) {
+  const body = await readBody(req);
+  try {
+    const cfg = readConfig() || {};
+    const original = cfg.sandbox || {};
+    patchConfig(['sandbox'], restoreRedacted(original, body));
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — Hooks 配置
+// ─────────────────────────────────────────────
+function handleGetHooks(req, res) {
+  const cfg = readConfig();
+  sendJson(res, redactConfig((cfg && cfg.hooks) || {}));
+}
+
+async function handleSaveHooks(req, res) {
+  const body = await readBody(req);
+  try {
+    const cfg = readConfig() || {};
+    const original = cfg.hooks || {};
+    patchConfig(['hooks'], restoreRedacted(original, body));
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — Memory 配置
+// ─────────────────────────────────────────────
+function handleGetMemory(req, res) {
+  const cfg = readConfig();
+  sendJson(res, (cfg && cfg.memory) || {});
+}
+
+async function handleSaveMemory(req, res) {
+  const body = await readBody(req);
+  try {
+    patchConfig(['memory'], body);
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — Tools 高级配置
+// ─────────────────────────────────────────────
+function handleGetToolsAdvanced(req, res) {
+  const cfg = readConfig();
+  const tools = (cfg && cfg.tools) || {};
+  sendJson(res, redactConfig({
+    exec: tools.exec || {},
+    web: tools.web || {},
+    fs: tools.fs || {},
+    elevated: tools.elevated || {},
+    loopDetection: tools.loopDetection || {},
+    profile: tools.profile || '',
+    allow: tools.allow || [],
+    deny: tools.deny || [],
+  }));
+}
+
+async function handleSaveToolsAdvanced(req, res) {
+  const body = await readBody(req);
+  try {
+    const { section, value } = body;
+    if (!section) return sendError(res, 'section 是必填项', 400);
+    const cfg = readConfig() || {};
+    const original = (cfg.tools && cfg.tools[section]) || {};
+    patchConfig(['tools', section], restoreRedacted(original, value));
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
 }
 
 // ─────────────────────────────────────────────
@@ -985,7 +1253,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  serveStatic(req, res);
+  serveStatic(req, res, pathname);
 });
 
 server.listen(PORT, '0.0.0.0', () => {

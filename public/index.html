@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenClaw Panel</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
 
@@ -99,6 +99,12 @@
     <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
     <path d="M12 9v4M12 17h.01"/>
   </symbol>
+  <!-- External Link -->
+  <symbol id="ico-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+    <polyline points="15 3 21 3 21 9"/>
+    <line x1="10" y1="14" x2="21" y2="3"/>
+  </symbol>
   <!-- Info -->
   <symbol id="ico-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="10"/>
@@ -143,6 +149,32 @@
   <!-- Doctor / Heart -->
   <symbol id="ico-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
     <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+  </symbol>
+  <!-- MCP / Plug -->
+  <symbol id="ico-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2v4a2 2 0 002 2h4"/>
+    <path d="M4 7V4a2 2 0 012-2h8l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2v-1"/>
+    <path d="M2 13h10M6 9l-4 4 4 4"/>
+  </symbol>
+  <!-- Sandbox / Box -->
+  <symbol id="ico-sandbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+    <line x1="12" y1="22.08" x2="12" y2="12"/>
+  </symbol>
+  <!-- Brain / Memory-AI -->
+  <symbol id="ico-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 01-2 2h-4a2 2 0 01-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/>
+    <path d="M9 21h6M10 17v4M14 17v4"/>
+  </symbol>
+  <!-- Hooks / Link -->
+  <symbol id="ico-hooks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+    <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+  </symbol>
+  <!-- Menu / Hamburger -->
+  <symbol id="ico-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M3 12h18M3 6h18M3 18h18"/>
   </symbol>
 </svg>
 
@@ -191,6 +223,22 @@
         <span class="nav-icon"><svg width="16" height="16"><use href="#ico-skills"/></svg></span>
         <span data-i18n="nav_skills">技能 & 插件</span>
       </a>
+      <a class="nav-item" data-page="mcp" href="#mcp">
+        <span class="nav-icon"><svg width="16" height="16"><use href="#ico-mcp"/></svg></span>
+        <span data-i18n="nav_mcp">MCP 服务</span>
+      </a>
+      <a class="nav-item" data-page="sandbox" href="#sandbox">
+        <span class="nav-icon"><svg width="16" height="16"><use href="#ico-sandbox"/></svg></span>
+        <span data-i18n="nav_sandbox">沙盒</span>
+      </a>
+      <a class="nav-item" data-page="memory" href="#memory">
+        <span class="nav-icon"><svg width="16" height="16"><use href="#ico-brain"/></svg></span>
+        <span data-i18n="nav_memory">记忆</span>
+      </a>
+      <a class="nav-item" data-page="hooks" href="#hooks">
+        <span class="nav-icon"><svg width="16" height="16"><use href="#ico-hooks"/></svg></span>
+        <span data-i18n="nav_hooks">Hooks</span>
+      </a>
 
       <div class="nav-section" data-i18n="nav_ops">运维</div>
       <a class="nav-item" data-page="quickops" href="#quickops">
@@ -212,13 +260,22 @@
         <span class="status-dot dot-offline" id="gwDot"></span>
         <span id="gwStatus" data-i18n="gw_checking">检测中...</span>
       </div>
+      <a class="webui-btn" id="openWebuiBtn" onclick="openWebUI()" title="打开 OpenClaw WebUI">
+        <svg width="14" height="14"><use href="#ico-external"/></svg>
+        <span>WebUI</span>
+      </a>
     </div>
   </aside>
 
   <!-- Main -->
   <div class="main-area">
     <header class="topbar">
-      <div class="page-title" id="pageTitle">概览</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileSidebar()">
+          <svg width="20" height="20"><use href="#ico-menu"/></svg>
+        </button>
+        <div class="page-title" id="pageTitle">概览</div>
+      </div>
       <div class="topbar-actions">
         <button class="btn btn-ghost btn-sm" id="langBtn">EN</button>
         <button class="theme-toggle" id="themeBtn" title="切换主题">
@@ -240,6 +297,23 @@
 <!-- Modal -->
 <div id="modalContainer"></div>
 
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
+
 <script src="/app.js"></script>
+<script src="/modules/overview.js"></script>
+<script src="/modules/providers.js"></script>
+<script src="/modules/agents.js"></script>
+<script src="/modules/channels.js"></script>
+<script src="/modules/tools.js"></script>
+<script src="/modules/skills.js"></script>
+<script src="/modules/cron.js"></script>
+<script src="/modules/logs.js"></script>
+<script src="/modules/settings.js"></script>
+<script src="/modules/quickops.js"></script>
+<script src="/modules/mcp.js"></script>
+<script src="/modules/sandbox.js"></script>
+<script src="/modules/memory.js"></script>
+<script src="/modules/hooks.js"></script>
+<script>init();</script>
 </body>
 </html>
