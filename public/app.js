@@ -725,7 +725,7 @@ function providerFormHtml(id, prov) {
 function openAddProviderModal() {
   openModal(`
     <div class="modal">
-      <div class="modal-header"><div class="modal-title">新增供应商</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">新增供应商</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">${providerFormHtml('', null)}</div>
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">${t('cancel')}</button>
@@ -742,7 +742,7 @@ async function openEditProviderModal(id) {
   } catch {}
   openModal(`
     <div class="modal modal-lg">
-      <div class="modal-header"><div class="modal-title">编辑供应商: ${esc(id)}</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">编辑供应商: ${esc(id)}</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">${providerFormHtml(id, prov)}</div>
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">${t('cancel')}</button>
@@ -767,7 +767,7 @@ async function addPresetProvider(presetId) {
   if (preset.api) provConfig.api = preset.api;
   openModal(`
     <div class="modal modal-lg">
-      <div class="modal-header"><div class="modal-title">添加 ${preset.name}</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">添加 ${preset.name}</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">${providerFormHtml(presetId, provConfig)}</div>
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">${t('cancel')}</button>
@@ -957,7 +957,7 @@ async function openAddAgentModal() {
   const modelOpts = await getModelOptions();
   openModal(`
     <div class="modal">
-      <div class="modal-header"><div class="modal-title">新增 Agent</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">新增 Agent</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">
         <div class="form-group">
           <label class="form-label">${t('agent_id')} <span class="required">*</span></label>
@@ -998,7 +998,7 @@ async function openEditAgentModal(id) {
   const currentModel = typeof agent.model === 'object' ? (agent.model.primary || '') : (agent.model || '');
   openModal(`
     <div class="modal">
-      <div class="modal-header"><div class="modal-title">编辑 Agent: ${esc(id)}</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">编辑 Agent: ${esc(id)}</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">
         <div class="form-group">
           <label class="form-label">${t('agent_name')}</label>
@@ -1185,7 +1185,7 @@ async function openChannelJsonEditor(name) {
   const cfg = channels[name] || {};
   openModal(`
     <div class="modal modal-lg">
-      <div class="modal-header"><div class="modal-title">${name} 高级配置</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">${name} 高级配置</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">
         <textarea id="chJson_${name}" class="form-textarea mono" rows="16">${esc(JSON.stringify(cfg, null, 2))}</textarea>
       </div>
@@ -1446,7 +1446,7 @@ function renderCronTable(jobs) {
 function openAddCronModal() {
   openModal(`
     <div class="modal modal-lg">
-      <div class="modal-header"><div class="modal-title">新增定时任务</div><button class="modal-close" onclick="closeModal()"><svg width="12" height="12"><use href="#ico-x"/></svg></button></div>
+      <div class="modal-header"><div class="modal-title">新增定时任务</div><button class="modal-close" onclick="closeModal()" title="关闭"><svg width="16" height="16"><use href="#ico-x"/></svg></button></div>
       <div class="modal-body">
         <div class="form-row">
           <div class="form-group">
