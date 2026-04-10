@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+.env
+openclaw-panel.pid
+fix-*.js

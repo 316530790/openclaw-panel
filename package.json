@@ -1,0 +1,21 @@
+{
+  "name": "openclaw-panel",
+  "version": "1.0.0",
+  "description": "OpenClaw 一站式管控台 - 监控、运维、配置管理",
+  "main": "server.js",
+  "bin": {
+    "openclaw-panel": "./bin/start.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "json5": "^2.2.3"
+  },
+  "keywords": ["openclaw", "panel", "dashboard", "admin"],
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
