@@ -108,7 +108,7 @@ async function renderQuickOps(container) {
             <span style="font-size:13px;color:var(--text-muted)">间隔</span>
             <input type="number" id="watchdogInterval" class="form-input" style="width:72px;text-align:center" min="10" max="3600" value="60">
             <span style="font-size:13px;color:var(--text-muted)">秒</span>
-            <button onclick="saveWatchdogSettings()" style="margin-left:4px;padding:5px 14px;font-size:12.5px;font-weight:600;border-radius:var(--radius-sm);border:none;background:var(--brand);color:#fff;cursor:pointer">保存</button>
+            <button class="btn btn-primary btn-sm" onclick="saveWatchdogSettings()">保存</button>
           </div>
         </div>
         <div style="display:flex;gap:24px;padding:12px;background:var(--bg-subtle);border-radius:var(--radius-sm);margin-bottom:12px">
@@ -322,6 +322,11 @@ function applyWatchdogData(data) {
     _wdLastAutoStart = data.autoStartedAt;
     if (typeof pollUntilGateway === 'function') pollUntilGateway(true);
   }
+  // miss 计数变化时立即同步顶部 Gateway 状态卡片
+  const prevMisses = parseInt(document.getElementById('watchdogMisses')?.textContent) || 0;
+  if (prevMisses !== (data.consecutiveMisses || 0)) {
+    if (typeof refreshQuickOpsStatus === 'function') refreshQuickOpsStatus();
+  }
   const toggle = document.getElementById('watchdogToggle');
   const intInput = document.getElementById('watchdogInterval');
   const missesEl = document.getElementById('watchdogMisses');
@@ -363,8 +368,11 @@ function updateWatchdogCountdown(nextCheckAt) {
 
 function startWatchdogPolling() {
   if (_wdPollTimer) clearInterval(_wdPollTimer);
+  // 轮询间隔自适应：取后端检测间隔的一半，最少 5 秒
+  const intEl = document.getElementById('watchdogInterval');
+  const backendInterval = parseInt(intEl?.value) || 60;
+  const pollMs = Math.max(5, Math.floor(backendInterval / 2)) * 1000;
   _wdPollTimer = setInterval(async () => {
-    // 离开快捷操作页后自动停止
     if (location.hash !== '#quickops') {
       clearInterval(_wdPollTimer); _wdPollTimer = null; return;
     }
@@ -372,7 +380,7 @@ function startWatchdogPolling() {
       const data = await api('GET', '/api/watchdog');
       applyWatchdogData(data);
     } catch {}
-  }, 5000);
+  }, pollMs);
 }
 
 async function saveWatchdogSettings() {

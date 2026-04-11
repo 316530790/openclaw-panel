@@ -1359,7 +1359,7 @@ function handleGetGatewayToken(req, res) {
 const WATCHDOG_CONFIG_PATH = path.join(__dirname, '.panel-watchdog.json');
 
 let _watchdog = { enabled: false, interval: 60 };
-let _watchdogState = { consecutiveMisses: 0, lastCheck: null, nextCheckAt: null, log: [], autoStartedAt: null };
+let _watchdogState = { consecutiveMisses: 0, lastCheck: null, nextCheckAt: null, log: [], autoStartedAt: null, lastAutoStartMs: 0 };
 let _watchdogTimer = null;
 
 function loadWatchdogConfig() {
@@ -1375,7 +1375,7 @@ function loadWatchdogConfig() {
 function saveWatchdogConfig() {
   try {
     fs.writeFileSync(WATCHDOG_CONFIG_PATH, JSON.stringify(_watchdog, null, 2), 'utf-8');
-  } catch {}
+  } catch (e) { console.error('[watchdog] config write failed:', e.message); }
 }
 
 function watchdogAddLog(msg) {
@@ -1412,16 +1412,25 @@ async function runWatchdogTick() {
     _watchdogState.consecutiveMisses++;
     watchdogAddLog(`Gateway 离线（连续第 ${_watchdogState.consecutiveMisses} 次）`);
     if (_watchdogState.consecutiveMisses >= 2) {
-      watchdogAddLog(`连续离线 2 次，自动启动...`);
-      try {
-        const { cmd, shell } = getOcCmd('gateway run');
-        const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
-        try { oc.unref(); } catch {}
-        watchdogAddLog(`已发送启动命令 (PID: ${oc.pid || '未知'})`);
-        _watchdogState.consecutiveMisses = 0;
-        _watchdogState.autoStartedAt = new Date().toISOString();
-      } catch (e) {
-        watchdogAddLog(`自动启动失败: ${e.message}`);
+      // Anti-Flapping: 自动启动后至少等 3 个 tick 的冷却期
+      const cooldownMs = _watchdog.interval * 3 * 1000;
+      const elapsed = Date.now() - _watchdogState.lastAutoStartMs;
+      if (_watchdogState.lastAutoStartMs > 0 && elapsed < cooldownMs) {
+        const remaining = Math.ceil((cooldownMs - elapsed) / 1000);
+        watchdogAddLog(`冷却中（${remaining}s 后才可再次启动）`);
+      } else {
+        watchdogAddLog(`连续离线 ${_watchdogState.consecutiveMisses} 次，自动启动...`);
+        try {
+          const { cmd, shell } = getOcCmd('gateway run');
+          const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+          try { oc.unref(); } catch {}
+          watchdogAddLog(`已发送启动命令 (PID: ${oc.pid || '未知'})`);
+          _watchdogState.consecutiveMisses = 0;
+          _watchdogState.lastAutoStartMs = Date.now();
+          _watchdogState.autoStartedAt = new Date().toISOString();
+        } catch (e) {
+          watchdogAddLog(`自动启动失败: ${e.message}`);
+        }
       }
     }
   }
