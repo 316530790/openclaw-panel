@@ -425,6 +425,9 @@ async function handleApi(req, res, pathname, params) {
   if (req.method === 'POST' && pathname === '/api/cmd/upgrade') {
     return handleCmdUpgrade(req, res);
   }
+  if (req.method === 'POST' && pathname === '/api/cmd/do-upgrade') {
+    return handleCmdDoUpgrade(req, res);
+  }
 
   // ── MCP 服务器管理 ────────────────────────
   if (req.method === 'GET' && pathname === '/api/mcp') {
@@ -1179,6 +1182,34 @@ function handleCmdUpgrade(req, res) {
       });
     });
   });
+}
+
+function handleCmdDoUpgrade(req, res) {
+  readBody(req).then(body => {
+    const isWin = os.platform() === 'win32';
+    const shell = isWin ? 'powershell' : true;
+    const targetVer = (body && body.version) ? body.version : 'latest';
+    const installCmd = `npm install -g openclaw@${targetVer}`;
+    exec(installCmd, { timeout: 120000, shell }, (err, stdout, stderr) => {
+      if (err) {
+        return sendJson(res, {
+          success: false,
+          error: err.message,
+          stdout: stdout || '',
+          stderr: stderr || '',
+        });
+      }
+      const verCmd = isWin ? 'openclaw.cmd --version' : 'openclaw --version';
+      exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
+        sendJson(res, {
+          success: true,
+          newVersion: (stdout2 || '').trim(),
+          stdout: stdout || '',
+          stderr: stderr || '',
+        });
+      });
+    });
+  }).catch(e => sendError(res, e.message, 400));
 }
 
 // ─────────────────────────────────────────────

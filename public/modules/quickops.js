@@ -125,7 +125,7 @@ async function renderQuickOps(container) {
             <div id="watchdogLastCheck" style="font-family:var(--font-mono);font-size:13px">从未</div>
           </div>
         </div>
-        <pre id="watchdogLog" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-secondary);white-space:pre-wrap;line-height:1.7;max-height:140px;overflow-y:auto;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);margin:0">（暂无日志）</pre>
+        <pre id="watchdogLog" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-secondary);white-space:pre-wrap;line-height:1.7;max-height:220px;overflow-y:auto;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);margin:0">（暂无日志）</pre>
       </div>
     </div>`;
 
@@ -257,23 +257,113 @@ function quickDoctor() {
   });
 }
 
+let _preUpgradeVersion = null;  // 记住升级前的版本号
+
 function quickUpdate() {
   toast('正在检查更新...', 'info');
-  const resultCard = document.getElementById('doctorResultCard');
-  const doctorOut = document.getElementById('doctorOut');
-  if (resultCard) resultCard.style.display = 'block';
-  if (doctorOut) doctorOut.textContent = '正在查询 NPM 仓库...\n';
+  showOpsOutput('overview', '版本检查', '正在查询 NPM 仓库...\n');
   api('POST', '/api/cmd/upgrade').then(data => {
     if (data.success) {
-      if (doctorOut) doctorOut.textContent = data.stdout || `当前: ${data.current}\n最新: ${data.latest}`;
-      toast(data.needsUpdate ? '发现新版本可升级' : '已是最新版本', data.needsUpdate ? 'warn' : 'success');
+      _preUpgradeVersion = data.current || null;
+      let content = `当前版本: ${data.current || '未知'}\n最新版本: ${data.latest || '未知'}\n`;
+      if (data.needsUpdate) {
+        content += '\n⬆ 发现新版本！';
+        toast('发现新版本可升级', 'warn');
+      } else {
+        content += '\n✓ 已是最新版本';
+        toast('已是最新版本', 'success');
+      }
+      showOpsOutput('overview', '版本检查', content);
+      // 显示操作按钮
+      if (data.needsUpdate) {
+        showUpgradeFooter(`将执行 npm install -g openclaw@latest`,
+          `<button class="btn btn-primary btn-sm" id="doUpgradeBtn" onclick="doUpgrade()">一键升级</button>`);
+      }
     } else {
-      if (doctorOut) doctorOut.textContent = '检查失败: ' + (data.error || '');
+      showOpsOutput('overview', '版本检查', '检查失败: ' + (data.error || ''));
       toast('版本检查失败', 'error');
     }
   }).catch(e => {
-    if (doctorOut) doctorOut.textContent = '请求失败: ' + e.message;
+    showOpsOutput('overview', '版本检查', '请求失败: ' + e.message);
     toast('版本检查请求失败: ' + e.message, 'error');
+  });
+}
+
+function showUpgradeFooter(hint, buttonsHtml) {
+  const card = document.getElementById('doctorResultCard');
+  if (!card) return;
+  const oldFooter = card.querySelector('.upgrade-footer');
+  if (oldFooter) oldFooter.remove();
+  const footer = document.createElement('div');
+  footer.className = 'upgrade-footer';
+  footer.style.cssText = 'padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap';
+  footer.innerHTML = `<span style="font-size:12.5px;color:var(--text-muted)">${hint}</span><div style="display:flex;gap:8px">${buttonsHtml}</div>`;
+  card.appendChild(footer);
+}
+
+async function doUpgrade() {
+  const btn = document.getElementById('doUpgradeBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '升级中...'; }
+  showOpsOutput('overview', '正在升级', '执行 npm install -g openclaw@latest ...\n请耐心等待，可能需要 1-2 分钟\n');
+  toast('正在执行升级...', 'info');
+  try {
+    const data = await api('POST', '/api/cmd/do-upgrade', { version: 'latest' });
+    let output = '';
+    if (data.stdout) output += data.stdout + '\n';
+    if (data.stderr) output += data.stderr + '\n';
+    if (data.success) {
+      output += `\n✓ 升级完成！新版本: ${data.newVersion || '未知'}`;
+      toast('升级完成！建议重启 Gateway', 'success');
+      showOpsOutput('overview', '升级结果', output);
+      // 显示回退按钮
+      const rollbackBtns = _preUpgradeVersion
+        ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_preUpgradeVersion}')">回退到 ${_preUpgradeVersion}</button>`
+        : '';
+      showUpgradeFooter(`当前: ${data.newVersion || '?'}  ←  旧版: ${_preUpgradeVersion || '?'}`, rollbackBtns);
+    } else {
+      output += `\n✗ 升级失败: ${data.error || '未知错误'}`;
+      toast('升级失败', 'error');
+      showOpsOutput('overview', '升级结果', output);
+      // 失败也显示回退和重试
+      const btns = [
+        `<button class="btn btn-primary btn-sm" id="doUpgradeBtn" onclick="doUpgrade()">重试</button>`,
+        _preUpgradeVersion ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_preUpgradeVersion}')">回退到 ${_preUpgradeVersion}</button>` : '',
+      ].filter(Boolean).join('');
+      showUpgradeFooter('升级失败', btns);
+    }
+  } catch (e) {
+    showOpsOutput('overview', '升级结果', '请求失败: ' + e.message);
+    toast('升级请求失败: ' + e.message, 'error');
+  }
+}
+
+async function doRollback(version) {
+  confirmDialog('回退版本', `确定回退到 openclaw@${version} 吗？`, async () => {
+    const btn = document.getElementById('doRollbackBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '回退中...'; }
+    showOpsOutput('overview', '正在回退', `执行 npm install -g openclaw@${version} ...\n请耐心等待\n`);
+    toast('正在回退版本...', 'info');
+    try {
+      const data = await api('POST', '/api/cmd/do-upgrade', { version });
+      let output = '';
+      if (data.stdout) output += data.stdout + '\n';
+      if (data.stderr) output += data.stderr + '\n';
+      if (data.success) {
+        output += `\n✓ 回退完成！当前版本: ${data.newVersion || '未知'}`;
+        toast('回退完成！建议重启 Gateway', 'success');
+        showOpsOutput('overview', '回退结果', output);
+        showUpgradeFooter(`已回退到 ${data.newVersion || version}`, '');
+      } else {
+        output += `\n✗ 回退失败: ${data.error || '未知错误'}`;
+        toast('回退失败', 'error');
+        showOpsOutput('overview', '回退结果', output);
+        if (btn) { btn.disabled = false; btn.textContent = `回退到 ${version}`; }
+      }
+    } catch (e) {
+      showOpsOutput('overview', '回退结果', '请求失败: ' + e.message);
+      toast('回退请求失败: ' + e.message, 'error');
+      if (btn) { btn.disabled = false; btn.textContent = `回退到 ${version}`; }
+    }
   });
 }
 
