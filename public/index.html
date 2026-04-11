@@ -105,6 +105,10 @@
     <polyline points="15 3 21 3 21 9"/>
     <line x1="10" y1="14" x2="21" y2="3"/>
   </symbol>
+  <!-- Search -->
+  <symbol id="ico-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </symbol>
   <!-- Info -->
   <symbol id="ico-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="10"/>
@@ -192,6 +196,11 @@
     </div>
 
     <nav class="sidebar-nav">
+      <a class="nav-item nav-webui" onclick="openWebUI()" href="javascript:void(0)">
+        <span class="nav-icon"><svg width="16" height="16"><use href="#ico-external"/></svg></span>
+        <span data-i18n="nav_webui">打开 WebUI</span>
+      </a>
+
       <div class="nav-section" data-i18n="nav_monitor">监控</div>
       <a class="nav-item active" data-page="overview" href="#overview">
         <span class="nav-icon"><svg width="16" height="16"><use href="#ico-overview"/></svg></span>
@@ -257,13 +266,15 @@
 
     <div class="sidebar-footer">
       <div class="gw-status">
+        <div class="gw-status-icon">
+          <svg width="14" height="14"><use href="#ico-server"/></svg>
+        </div>
+        <div class="gw-status-body">
+          <div class="gw-status-label">Gateway</div>
+          <div class="gw-status-text" id="gwStatus" data-i18n="gw_checking">检测中...</div>
+        </div>
         <span class="status-dot dot-offline" id="gwDot"></span>
-        <span id="gwStatus" data-i18n="gw_checking">检测中...</span>
       </div>
-      <a class="webui-btn" id="openWebuiBtn" onclick="openWebUI()" title="打开 OpenClaw WebUI">
-        <svg width="14" height="14"><use href="#ico-external"/></svg>
-        <span>WebUI</span>
-      </a>
     </div>
   </aside>
 

@@ -284,6 +284,11 @@ async function handleApi(req, res, pathname, params) {
     return handleSysHealth(req, res);
   }
 
+  // ── Gateway Token（用于 WebUI 自动登录）────
+  if (req.method === 'GET' && pathname === '/api/gateway-token') {
+    return handleGetGatewayToken(req, res);
+  }
+
   // ── 配置 ──────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/config') {
     const cfg = readConfig();
@@ -392,6 +397,10 @@ async function handleApi(req, res, pathname, params) {
   // ── 日志 SSE ──────────────────────────────
   if (req.method === 'GET' && pathname === '/api/logs/stream') {
     return handleLogsStream(req, res, params);
+  }
+  // ── 通用配置 patch ──────────────────────────
+  if (req.method === 'POST' && pathname === '/api/config/patch') {
+    return handleConfigPatch(req, res);
   }
 
   // ── 运维命令 ──────────────────────────────
@@ -995,6 +1004,22 @@ function handleLogsStream(req, res, params) {
 }
 
 // ─────────────────────────────────────────────
+// API 实现 — 通用配置 patch
+// ─────────────────────────────────────────────
+async function handleConfigPatch(req, res) {
+  try {
+    const body = await readBody(req);
+    if (!body.path || !Array.isArray(body.path)) {
+      return sendError(res, 'path must be an array', 400);
+    }
+    patchConfig(body.path, body.value);
+    sendJson(res, { ok: true });
+  } catch (e) {
+    sendError(res, e.message, 500);
+  }
+}
+
+// ─────────────────────────────────────────────
 // API 实现 — 运维命令
 // ─────────────────────────────────────────────
 function getOcCmd(sub) {
@@ -1031,47 +1056,79 @@ function findGatewayPids(callback) {
   }
 }
 
-function handleCmdRestart(req, res) {
-  // 先返回响应，再执行操作（避免用户等待）
-  sendJson(res, { success: true, message: 'Gateway 重启命令已发送' });
-  findGatewayPids(pids => {
-    pids.forEach(pid => {
-      try { process.kill(parseInt(pid)); } catch (e) {
-        if (os.platform() === 'win32') {
-          try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) {}
-        }
+function ts() {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function killPids(pids, lines) {
+  pids.forEach(pid => {
+    try {
+      process.kill(parseInt(pid));
+      lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
+    } catch (e) {
+      if (os.platform() === 'win32') {
+        try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch {}
       }
-    });
+      lines.push(`[${ts()}] 强制终止进程 PID ${pid}`);
+    }
+  });
+}
+
+function handleCmdRestart(req, res) {
+  const lines = [];
+  lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
+  findGatewayPids(pids => {
+    if (pids.length > 0) {
+      lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
+      killPids(pids, lines);
+    } else {
+      lines.push(`[${ts()}] 未找到运行中的进程，直接启动`);
+    }
+    lines.push(`[${ts()}] 等待进程退出...`);
     setTimeout(() => {
-      const { cmd, shell } = getOcCmd('gateway run');
-      const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
-      try { oc.unref(); } catch {}
+      try {
+        const { cmd, shell } = getOcCmd('gateway run');
+        lines.push(`[${ts()}] 正在启动新实例...`);
+        const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+        try { oc.unref(); } catch {}
+        lines.push(`[${ts()}] Gateway 已启动 (PID: ${oc.pid || '未知'})`);
+        sendJson(res, { success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
+      } catch (e) {
+        lines.push(`[${ts()}] 启动失败: ${e.message}`);
+        sendJson(res, { success: false, error: e.message, output: lines.join('\n') });
+      }
     }, 500);
   });
 }
 
 function handleCmdStop(req, res) {
-  sendJson(res, { success: true, message: 'Gateway 停止命令已发送' });
+  const lines = [];
+  lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
   findGatewayPids(pids => {
-    if (pids.length === 0) return;
-    pids.forEach(pid => {
-      try { process.kill(parseInt(pid)); } catch (e) {
-        if (os.platform() === 'win32') {
-          try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) {}
-        }
-      }
-    });
+    if (pids.length === 0) {
+      lines.push(`[${ts()}] 未找到运行中的 Gateway 进程`);
+      return sendJson(res, { success: true, message: '未找到 Gateway 进程', output: lines.join('\n') });
+    }
+    lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
+    killPids(pids, lines);
+    lines.push(`[${ts()}] Gateway 已停止`);
+    sendJson(res, { success: true, message: 'Gateway 已停止', output: lines.join('\n') });
   });
 }
 
 function handleCmdStart(req, res) {
+  const lines = [];
+  lines.push(`[${ts()}] 正在启动 Gateway...`);
   try {
     const { cmd, shell } = getOcCmd('gateway run');
+    lines.push(`[${ts()}] 执行: openclaw gateway run`);
     const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
-    oc.unref();
-    sendJson(res, { success: true, message: 'Gateway start command sent' });
+    try { oc.unref(); } catch {}
+    lines.push(`[${ts()}] 进程已启动 (PID: ${oc.pid || '未知'})`);
+    sendJson(res, { success: true, message: 'Gateway 启动命令已发送', output: lines.join('\n') });
   } catch (e) {
-    sendError(res, e.message, 500);
+    lines.push(`[${ts()}] 启动失败: ${e.message}`);
+    sendJson(res, { success: false, error: e.message, output: lines.join('\n') });
   }
 }
 
@@ -1255,6 +1312,32 @@ const server = http.createServer(async (req, res) => {
 
   serveStatic(req, res, pathname);
 });
+
+// ─────────────────────────────────────────────
+// API 实现 — Gateway Token 解析（用于 WebUI 自动登录）
+// ─────────────────────────────────────────────
+function resolveTokenValue(val) {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    // 支持 "${VAR_NAME}" 模板格式
+    const m = val.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+    if (m) return process.env[m[1]] || null;
+    return val;
+  }
+  // SecretRef: { source: 'env', id: 'VAR_NAME' }
+  if (typeof val === 'object' && val.source === 'env' && val.id) {
+    return process.env[val.id] || null;
+  }
+  return null;
+}
+
+function handleGetGatewayToken(req, res) {
+  const cfg = readConfig();
+  const auth = (cfg && cfg.gateway && cfg.gateway.auth) || {};
+  const mode = auth.mode || 'none';
+  const token = resolveTokenValue(auth.token);
+  sendJson(res, { mode, token });
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[openclaw-panel] 服务已启动: http://localhost:${PORT}`);

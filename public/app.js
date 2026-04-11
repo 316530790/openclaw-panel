@@ -9,7 +9,7 @@ const I18N = {
     nav_overview: '概览', nav_logs: '日志', nav_providers: '供应商',
     nav_agents: 'Agent', nav_channels: '渠道', nav_tools: '工具',
     nav_skills: '技能 & 插件', nav_cron: '定时任务', nav_settings: '设置', nav_quickops: '快捷操作',
-    nav_mcp: 'MCP 服务', nav_sandbox: '沙盒', nav_memory: '记忆', nav_hooks: 'Hooks',
+    nav_mcp: 'MCP 服务', nav_sandbox: '沙盒', nav_memory: '记忆', nav_hooks: 'Hooks', nav_webui: '打开 WebUI',
     gw_online: 'Gateway 在线', gw_offline: 'Gateway 离线', gw_checking: '检测中...',
     save: '保存', cancel: '取消', delete: '删除', edit: '编辑', add: '新增',
     confirm: '确认', test: '测试', enable: '启用', disable: '禁用',
@@ -61,7 +61,7 @@ const I18N = {
     nav_overview: 'Overview', nav_logs: 'Logs', nav_providers: 'Providers',
     nav_agents: 'Agents', nav_channels: 'Channels', nav_tools: 'Tools',
     nav_skills: 'Skills & Plugins', nav_cron: 'Cron Jobs', nav_settings: 'Settings', nav_quickops: 'Quick Ops',
-    nav_mcp: 'MCP Servers', nav_sandbox: 'Sandbox', nav_memory: 'Memory', nav_hooks: 'Hooks',
+    nav_mcp: 'MCP Servers', nav_sandbox: 'Sandbox', nav_memory: 'Memory', nav_hooks: 'Hooks', nav_webui: 'Open WebUI',
     gw_online: 'Gateway Online', gw_offline: 'Gateway Offline', gw_checking: 'Checking...',
     save: 'Save', cancel: 'Cancel', delete: 'Delete', edit: 'Edit', add: 'Add',
     confirm: 'Confirm', test: 'Test', enable: 'Enable', disable: 'Disable',
@@ -390,11 +390,11 @@ async function pollHealth() {
     const status = document.getElementById('gwStatus');
     if (dot && status) {
       if (data && data.gateway && data.gateway.alive) {
-        dot.className = 'status-dot online';
+        dot.className = 'status-dot dot-online';
         _gwPort = data.gateway.port || 18789;
-        status.textContent = t('gw_online') + ' :' + _gwPort;
+        status.textContent = t('gw_online') + ' · ' + _gwPort;
       } else {
-        dot.className = 'status-dot offline';
+        dot.className = 'status-dot dot-offline';
         status.textContent = t('gw_offline');
         _gwPort = null;
       }
@@ -406,10 +406,16 @@ async function pollHealth() {
   } catch {}
 }
 
-// 打开 OpenClaw 内置 WebUI
-function openWebUI() {
+// 打开 OpenClaw 内置 WebUI（自动带 token 免登录）
+async function openWebUI() {
   const port = _gwPort || 18789;
-  const url = `http://localhost:${port}`;
+  let url = `http://localhost:${port}`;
+  try {
+    const data = await api('GET', '/api/gateway-token');
+    if (data && data.token) {
+      url += `#token=${encodeURIComponent(data.token)}`;
+    }
+  } catch {}
   window.open(url, '_blank');
 }
 
