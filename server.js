@@ -270,7 +270,13 @@ function serveStatic(req, res, pathname) {
       return;
     }
     const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    // 开发模式：JS/CSS 不缓存，确保每次都加载最新代码
+    if (ext === '.js' || ext === '.css') {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      headers['Pragma'] = 'no-cache';
+    }
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
@@ -462,6 +468,14 @@ async function handleApi(req, res, pathname, params) {
   }
   if (req.method === 'POST' && pathname === '/api/tools/advanced') {
     return handleSaveToolsAdvanced(req, res);
+  }
+
+  // ── 看门狗 ────────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/watchdog') {
+    return handleGetWatchdog(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/watchdog') {
+    return handleSaveWatchdog(req, res);
   }
 
   sendError(res, '接口不存在', 404);
@@ -1339,10 +1353,138 @@ function handleGetGatewayToken(req, res) {
   sendJson(res, { mode, token });
 }
 
+// ─────────────────────────────────────────────
+// 看门狗 — 自动守护 Gateway
+// ─────────────────────────────────────────────
+const WATCHDOG_CONFIG_PATH = path.join(__dirname, '.panel-watchdog.json');
+
+let _watchdog = { enabled: false, interval: 60 };
+let _watchdogState = { consecutiveMisses: 0, lastCheck: null, nextCheckAt: null, log: [], autoStartedAt: null };
+let _watchdogTimer = null;
+
+function loadWatchdogConfig() {
+  try {
+    if (fs.existsSync(WATCHDOG_CONFIG_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(WATCHDOG_CONFIG_PATH, 'utf-8'));
+      if (typeof parsed.enabled === 'boolean') _watchdog.enabled = parsed.enabled;
+      if (parsed.interval) _watchdog.interval = Math.max(10, parseInt(parsed.interval) || 60);
+    }
+  } catch {}
+}
+
+function saveWatchdogConfig() {
+  try {
+    fs.writeFileSync(WATCHDOG_CONFIG_PATH, JSON.stringify(_watchdog, null, 2), 'utf-8');
+  } catch {}
+}
+
+function watchdogAddLog(msg) {
+  const entry = `[${ts()}] ${msg}`;
+  _watchdogState.log.push(entry);
+  if (_watchdogState.log.length > 50) _watchdogState.log.shift();
+  console.log('[watchdog]', msg);
+}
+
+function probeGatewayPort() {
+  return new Promise(resolve => {
+    const cfg = readConfig();
+    const gwPort = (cfg && cfg.gateway && cfg.gateway.port) || 18789;
+    const sock = new net.Socket();
+    sock.setTimeout(800);
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('timeout', () => { sock.destroy(); resolve(false); });
+    sock.once('error', () => { sock.destroy(); resolve(false); });
+    sock.connect(gwPort, '127.0.0.1');
+  });
+}
+
+async function runWatchdogTick() {
+  if (!_watchdog.enabled) return;
+  _watchdogState.lastCheck = new Date().toISOString();
+  const alive = await probeGatewayPort();
+  if (alive) {
+    // 只在状态从离线恢复时记录，正常运行不重复写日志
+    if (_watchdogState.consecutiveMisses > 0) {
+      watchdogAddLog(`Gateway 恢复正常，计数清零`);
+    }
+    _watchdogState.consecutiveMisses = 0;
+  } else {
+    _watchdogState.consecutiveMisses++;
+    watchdogAddLog(`Gateway 离线（连续第 ${_watchdogState.consecutiveMisses} 次）`);
+    if (_watchdogState.consecutiveMisses >= 2) {
+      watchdogAddLog(`连续离线 2 次，自动启动...`);
+      try {
+        const { cmd, shell } = getOcCmd('gateway run');
+        const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+        try { oc.unref(); } catch {}
+        watchdogAddLog(`已发送启动命令 (PID: ${oc.pid || '未知'})`);
+        _watchdogState.consecutiveMisses = 0;
+        _watchdogState.autoStartedAt = new Date().toISOString();
+      } catch (e) {
+        watchdogAddLog(`自动启动失败: ${e.message}`);
+      }
+    }
+  }
+  scheduleWatchdog();
+}
+
+function scheduleWatchdog() {
+  if (_watchdogTimer) clearTimeout(_watchdogTimer);
+  if (!_watchdog.enabled) { _watchdogState.nextCheckAt = null; return; }
+  _watchdogState.nextCheckAt = new Date(Date.now() + _watchdog.interval * 1000).toISOString();
+  _watchdogTimer = setTimeout(runWatchdogTick, _watchdog.interval * 1000);
+}
+
+function startWatchdog() {
+  if (_watchdogTimer) clearTimeout(_watchdogTimer);
+  _watchdogState.consecutiveMisses = 0;
+  watchdogAddLog(`守护已启用，间隔 ${_watchdog.interval}s`);
+  scheduleWatchdog();
+}
+
+function stopWatchdog() {
+  if (_watchdogTimer) { clearTimeout(_watchdogTimer); _watchdogTimer = null; }
+  _watchdogState.nextCheckAt = null;
+  watchdogAddLog(`守护已停用`);
+}
+
+function handleGetWatchdog(req, res) {
+  sendJson(res, {
+    enabled: _watchdog.enabled,
+    interval: _watchdog.interval,
+    consecutiveMisses: _watchdogState.consecutiveMisses,
+    lastCheck: _watchdogState.lastCheck,
+    nextCheckAt: _watchdogState.nextCheckAt,
+    log: _watchdogState.log.slice(-20),
+    autoStartedAt: _watchdogState.autoStartedAt,
+  });
+}
+
+async function handleSaveWatchdog(req, res) {
+  const body = await readBody(req);
+  const wasEnabled = _watchdog.enabled;
+  if (typeof body.enabled === 'boolean') _watchdog.enabled = body.enabled;
+  if (body.interval != null) _watchdog.interval = Math.max(10, parseInt(body.interval) || 60);
+  saveWatchdogConfig();
+  if (_watchdog.enabled && !wasEnabled) {
+    startWatchdog();
+  } else if (!_watchdog.enabled && wasEnabled) {
+    stopWatchdog();
+  } else if (_watchdog.enabled) {
+    scheduleWatchdog();
+  }
+  sendJson(res, { ok: true, enabled: _watchdog.enabled, interval: _watchdog.interval });
+}
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[openclaw-panel] 服务已启动: http://localhost:${PORT}`);
   console.log(`[openclaw-panel] OPENCLAW_HOME: ${OPENCLAW_HOME}`);
   console.log(`[openclaw-panel] 配置文件: ${CONFIG_PATH}`);
+  loadWatchdogConfig();
+  if (_watchdog.enabled) {
+    console.log(`[openclaw-panel] 看门狗已启用，间隔 ${_watchdog.interval}s`);
+    startWatchdog();
+  }
 });
 
 server.on('error', (e) => {

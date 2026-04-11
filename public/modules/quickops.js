@@ -85,7 +85,51 @@ async function renderQuickOps(container) {
       <div class="card-body">
         <pre id="doctorOut" style="font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);white-space:pre-wrap;line-height:1.7"></pre>
       </div>
+    </div>
+
+    <div class="card" id="watchdogCard" style="margin-top:16px">
+      <div class="card-header">
+        <div class="card-title">
+          <svg class="card-title-icon" width="18" height="18"><use href="#ico-zap"/></svg>
+          <span>看门狗</span>
+        </div>
+        <span style="font-size:12px;color:var(--text-muted)">离线 2 次自动重启</span>
+      </div>
+      <div class="card-body" style="padding:20px">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <label class="toggle" style="margin-left:0">
+              <input type="checkbox" id="watchdogToggle">
+              <span class="toggle-track"></span>
+            </label>
+            <span style="font-size:13px;font-weight:600">启用守护</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+            <span style="font-size:13px;color:var(--text-muted)">间隔</span>
+            <input type="number" id="watchdogInterval" class="form-input" style="width:72px;text-align:center" min="10" max="3600" value="60">
+            <span style="font-size:13px;color:var(--text-muted)">秒</span>
+            <button onclick="saveWatchdogSettings()" style="margin-left:4px;padding:5px 14px;font-size:12.5px;font-weight:600;border-radius:var(--radius-sm);border:none;background:var(--brand);color:#fff;cursor:pointer">保存</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:24px;padding:12px;background:var(--bg-subtle);border-radius:var(--radius-sm);margin-bottom:12px">
+          <div>
+            <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:3px">下次检测</div>
+            <div id="watchdogCountdown" style="font-family:var(--font-mono);font-size:13px;font-weight:600">—</div>
+          </div>
+          <div>
+            <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:3px">连续离线</div>
+            <div id="watchdogMisses" style="font-family:var(--font-mono);font-size:13px;font-weight:600">0</div>
+          </div>
+          <div>
+            <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:3px">上次检测</div>
+            <div id="watchdogLastCheck" style="font-family:var(--font-mono);font-size:13px">从未</div>
+          </div>
+        </div>
+        <pre id="watchdogLog" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-secondary);white-space:pre-wrap;line-height:1.7;max-height:140px;overflow-y:auto;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);margin:0">（暂无日志）</pre>
+      </div>
     </div>`;
+
+  initWatchdog();
 }
 
 function showOpsOutput(icon, title, content) {
@@ -167,7 +211,14 @@ function quickStop() {
   }, true);
 }
 
-function quickStart() {
+async function quickStart() {
+  // 先检查当前状态，已在运行则提示，不重复启动
+  let health = {};
+  try { health = await api('GET', '/api/sys-health') || {}; } catch {}
+  if (health.gateway && health.gateway.alive) {
+    toast('Gateway 已在运行中，无需重复启动', 'info');
+    return;
+  }
   confirmDialog('启动 Gateway', '确定启动 OpenClaw 网关核心吗？', async () => {
     toast('正在启动 Gateway...', 'info');
     showOpsOutput('zap', '启动日志', '正在执行...');
@@ -224,5 +275,125 @@ function quickUpdate() {
     if (doctorOut) doctorOut.textContent = '请求失败: ' + e.message;
     toast('版本检查请求失败: ' + e.message, 'error');
   });
+}
+
+// ─────────────────────────────────────────────
+// 看门狗前端逻辑
+// ─────────────────────────────────────────────
+let _wdCdTimer = null;
+let _wdPollTimer = null;
+let _wdLastAutoStart = null;
+let _statusRefreshTimer = null;
+
+async function initWatchdog() {
+  // 页面重进时清理旧计时器
+  if (_wdCdTimer) { clearInterval(_wdCdTimer); _wdCdTimer = null; }
+  if (_wdPollTimer) { clearInterval(_wdPollTimer); _wdPollTimer = null; }
+  if (_statusRefreshTimer) { clearInterval(_statusRefreshTimer); _statusRefreshTimer = null; }
+
+  // 常规状态刷新：每 8 秒刷新 Gateway 状态卡片（不依赖看门狗是否启用）
+  _statusRefreshTimer = setInterval(() => {
+    if (location.hash !== '#quickops') {
+      clearInterval(_statusRefreshTimer); _statusRefreshTimer = null; return;
+    }
+    if (typeof refreshQuickOpsStatus === 'function') refreshQuickOpsStatus();
+  }, 8000);
+
+  // 离开页面时立即停止所有计时器（一次性监听）
+  function onLeave() {
+    if (_wdCdTimer) { clearInterval(_wdCdTimer); _wdCdTimer = null; }
+    if (_wdPollTimer) { clearInterval(_wdPollTimer); _wdPollTimer = null; }
+    if (_statusRefreshTimer) { clearInterval(_statusRefreshTimer); _statusRefreshTimer = null; }
+    window.removeEventListener('hashchange', onLeave);
+  }
+  window.addEventListener('hashchange', onLeave);
+
+  try {
+    const data = await api('GET', '/api/watchdog');
+    applyWatchdogData(data);
+    if (data.enabled) startWatchdogPolling();
+  } catch {}
+}
+
+function applyWatchdogData(data) {
+  if (!data) return;
+  // autoStartedAt 变化 → 看门狗刚触发了自动启动，立即高频轮询直到确认上线
+  if (data.autoStartedAt && data.autoStartedAt !== _wdLastAutoStart) {
+    _wdLastAutoStart = data.autoStartedAt;
+    if (typeof pollUntilGateway === 'function') pollUntilGateway(true);
+  }
+  const toggle = document.getElementById('watchdogToggle');
+  const intInput = document.getElementById('watchdogInterval');
+  const missesEl = document.getElementById('watchdogMisses');
+  const lastEl = document.getElementById('watchdogLastCheck');
+  const logEl = document.getElementById('watchdogLog');
+  if (toggle) toggle.checked = !!data.enabled;
+  if (intInput && document.activeElement !== intInput) intInput.value = data.interval || 60;
+  if (missesEl) {
+    missesEl.textContent = data.consecutiveMisses || 0;
+    missesEl.style.color = (data.consecutiveMisses > 0) ? 'var(--red)' : 'var(--text-primary)';
+  }
+  if (lastEl) lastEl.textContent = data.lastCheck
+    ? new Date(data.lastCheck).toLocaleTimeString('zh-CN', { hour12: false })
+    : '从未';
+  if (logEl) {
+    logEl.textContent = (data.log || []).join('\n') || '（暂无日志）';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  updateWatchdogCountdown(data.nextCheckAt);
+}
+
+function updateWatchdogCountdown(nextCheckAt) {
+  if (_wdCdTimer) { clearInterval(_wdCdTimer); _wdCdTimer = null; }
+  const el = document.getElementById('watchdogCountdown');
+  if (!el) return;
+  if (!nextCheckAt) { el.textContent = '—'; return; }
+  const target = new Date(nextCheckAt).getTime();
+  function tick() {
+    if (location.hash !== '#quickops') { clearInterval(_wdCdTimer); _wdCdTimer = null; return; }
+    const cdEl = document.getElementById('watchdogCountdown');
+    if (!cdEl) { clearInterval(_wdCdTimer); _wdCdTimer = null; return; }
+    const rem = Math.max(0, Math.floor((target - Date.now()) / 1000));
+    cdEl.textContent = rem > 0 ? `${rem}s` : '检测中...';
+    if (rem <= 0) { clearInterval(_wdCdTimer); _wdCdTimer = null; }
+  }
+  tick();
+  _wdCdTimer = setInterval(tick, 1000);
+}
+
+function startWatchdogPolling() {
+  if (_wdPollTimer) clearInterval(_wdPollTimer);
+  _wdPollTimer = setInterval(async () => {
+    // 离开快捷操作页后自动停止
+    if (location.hash !== '#quickops') {
+      clearInterval(_wdPollTimer); _wdPollTimer = null; return;
+    }
+    try {
+      const data = await api('GET', '/api/watchdog');
+      applyWatchdogData(data);
+    } catch {}
+  }, 5000);
+}
+
+async function saveWatchdogSettings() {
+  const toggle = document.getElementById('watchdogToggle');
+  const intInput = document.getElementById('watchdogInterval');
+  if (!toggle || !intInput) return;
+  const enabled = toggle.checked;
+  const interval = Math.max(10, parseInt(intInput.value) || 60);
+  intInput.value = interval;
+  try {
+    await api('POST', '/api/watchdog', { enabled, interval });
+    const data = await api('GET', '/api/watchdog');
+    applyWatchdogData(data);
+    if (enabled) {
+      startWatchdogPolling();
+    } else {
+      if (_wdPollTimer) { clearInterval(_wdPollTimer); _wdPollTimer = null; }
+    }
+    toast(enabled ? '看门狗已启用' : '看门狗已停用', 'success');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
 }
 
