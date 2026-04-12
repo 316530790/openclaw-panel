@@ -399,6 +399,10 @@ async function handleApi(req, res, pathname, params) {
   if (req.method === 'GET' && pathname === '/api/sessions') {
     return handleGetSessions(req, res);
   }
+  if (req.method === 'GET' && pathname.startsWith('/api/sessions/') && pathname.endsWith('/messages')) {
+    const key = decodeURIComponent(pathname.slice('/api/sessions/'.length, -'/messages'.length));
+    return handleGetSessionMessages(req, res, key, params);
+  }
 
   // ── 日志 SSE ──────────────────────────────
   if (req.method === 'GET' && pathname === '/api/logs/stream') {
@@ -463,6 +467,22 @@ async function handleApi(req, res, pathname, params) {
   }
   if (req.method === 'POST' && pathname === '/api/memory') {
     return handleSaveMemory(req, res);
+  }
+  // ── Memory 文件管理 ────────────────────────
+  if (req.method === 'GET' && pathname === '/api/memory/files') {
+    return handleGetMemoryFiles(req, res);
+  }
+  if (req.method === 'GET' && pathname.startsWith('/api/memory/files/')) {
+    const name = decodeURIComponent(pathname.slice('/api/memory/files/'.length));
+    return handleGetMemoryFile(req, res, name);
+  }
+  if (req.method === 'PUT' && pathname.startsWith('/api/memory/files/')) {
+    const name = decodeURIComponent(pathname.slice('/api/memory/files/'.length));
+    return handleSaveMemoryFile(req, res, name);
+  }
+  // ── 用量统计 ───────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/usage') {
+    return handleGetUsage(req, res);
   }
 
   // ── Tools 高级配置 ────────────────────────
@@ -1394,6 +1414,290 @@ async function handleSaveMemory(req, res) {
     patchConfig(['memory'], body);
     sendJson(res, { ok: true });
   } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — 会话消息查看
+// ─────────────────────────────────────────────
+function handleGetSessionMessages(req, res, sessionKey, params) {
+  const limit = Math.min(parseInt(params.get('limit') || '200', 10), 500);
+  const cfg = readConfig();
+  const agentList = (cfg && cfg.agents && cfg.agents.list) || [{ id: 'main' }];
+
+  // 在所有 agent 的 session 目录中查找
+  let filePath = null;
+  let agentId = null;
+  for (const agent of agentList) {
+    const sessionDir = findSessionDir(agent.id, agent);
+    if (!sessionDir) continue;
+    const fp = path.join(sessionDir, sessionKey + '.jsonl');
+    try {
+      if (fs.existsSync(fp)) { filePath = fp; agentId = agent.id; break; }
+    } catch {}
+  }
+  if (!filePath) return sendError(res, 'Session not found', 404);
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const lines = raw.split('\n').filter(l => l.trim());
+    const messages = [];
+    let totalIn = 0, totalOut = 0;
+    let model = null;
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        // 提取消息
+        const msg = {
+          role: obj.role || obj.type || 'unknown',
+          content: '',
+          timestamp: obj.timestamp || obj.created_at || null,
+          toolCalls: null,
+          toolName: null,
+          model: null,
+        };
+
+        // 内容提取
+        if (typeof obj.content === 'string') {
+          msg.content = obj.content;
+        } else if (Array.isArray(obj.content)) {
+          msg.content = obj.content
+            .filter(c => c.type === 'text' || c.type === 'output_text')
+            .map(c => c.text || c.content || '')
+            .join('\n');
+        } else if (obj.output && typeof obj.output === 'string') {
+          msg.content = obj.output;
+        } else if (obj.message && typeof obj.message === 'string') {
+          msg.content = obj.message;
+        }
+
+        // Tool calls
+        if (obj.tool_calls && Array.isArray(obj.tool_calls)) {
+          msg.toolCalls = obj.tool_calls.map(tc => ({
+            name: tc.function?.name || tc.name || 'unknown',
+            args: tc.function?.arguments || tc.input || '',
+          }));
+        }
+        if (obj.name) msg.toolName = obj.name;
+        if (obj.role === 'tool') msg.role = 'tool';
+
+        // Model
+        if (obj.model) { msg.model = obj.model; model = obj.model; }
+
+        // Usage
+        if (obj.usage) {
+          totalIn += obj.usage.input_tokens || obj.usage.prompt_tokens || 0;
+          totalOut += obj.usage.output_tokens || obj.usage.completion_tokens || 0;
+        }
+
+        // 只保留有意义的消息
+        if (msg.content || msg.toolCalls || msg.role === 'tool') {
+          messages.push(msg);
+        }
+      } catch {}
+    }
+
+    const stat = fs.statSync(filePath);
+    sendJson(res, {
+      sessionKey,
+      agentId,
+      model,
+      messageCount: messages.length,
+      messages: messages.slice(-limit),
+      usage: { inputTokens: totalIn, outputTokens: totalOut, totalTokens: totalIn + totalOut },
+      sizeBytes: stat.size,
+      lastModified: new Date(stat.mtimeMs).toISOString(),
+    });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — Memory 文件浏览与编辑
+// ─────────────────────────────────────────────
+function handleGetMemoryFiles(req, res) {
+  const memoryDirs = [
+    path.join(OPENCLAW_HOME, 'memory'),
+    path.join(OPENCLAW_HOME, 'agents', 'main', 'memory'),
+  ];
+  // 也检查各个 agent 目录下的 MEMORY.md
+  const cfg = readConfig();
+  const agentList = (cfg && cfg.agents && cfg.agents.list) || [];
+  for (const a of agentList) {
+    memoryDirs.push(path.join(OPENCLAW_HOME, 'agents', a.id, 'memory'));
+    if (a.agentDir) memoryDirs.push(path.join(a.agentDir, 'memory'));
+  }
+
+  // 也查找特殊文件
+  const specialFiles = [
+    path.join(OPENCLAW_HOME, 'MEMORY.md'),
+    path.join(OPENCLAW_HOME, 'USER.md'),
+    path.join(OPENCLAW_HOME, 'IDENTITY.md'),
+  ];
+
+  const files = [];
+  const seen = new Set();
+
+  // 扫描目录
+  for (const dir of memoryDirs) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const entries = fs.readdirSync(dir);
+      for (const e of entries) {
+        if (!/\.(md|txt|markdown)$/i.test(e)) continue;
+        const fp = path.join(dir, e);
+        if (seen.has(fp)) continue;
+        seen.add(fp);
+        try {
+          const stat = fs.statSync(fp);
+          const content = fs.readFileSync(fp, 'utf-8');
+          files.push({
+            name: e,
+            path: fp,
+            dir: dir,
+            size: stat.size,
+            lastModified: new Date(stat.mtimeMs).toISOString(),
+            excerpt: content.slice(0, 300).replace(/\n/g, ' ').trim(),
+          });
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // 特殊文件
+  for (const fp of specialFiles) {
+    if (seen.has(fp)) continue;
+    try {
+      if (!fs.existsSync(fp)) continue;
+      seen.add(fp);
+      const stat = fs.statSync(fp);
+      const content = fs.readFileSync(fp, 'utf-8');
+      files.push({
+        name: path.basename(fp),
+        path: fp,
+        dir: path.dirname(fp),
+        size: stat.size,
+        lastModified: new Date(stat.mtimeMs).toISOString(),
+        excerpt: content.slice(0, 300).replace(/\n/g, ' ').trim(),
+        special: true,
+      });
+    } catch {}
+  }
+
+  files.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+  sendJson(res, files);
+}
+
+function handleGetMemoryFile(req, res, name) {
+  // name 可以是完整路径或相对名称
+  const candidates = [
+    name, // 直接路径
+    path.join(OPENCLAW_HOME, 'memory', name),
+    path.join(OPENCLAW_HOME, name),
+  ];
+  for (const fp of candidates) {
+    try {
+      if (fs.existsSync(fp)) {
+        const content = fs.readFileSync(fp, 'utf-8');
+        const stat = fs.statSync(fp);
+        return sendJson(res, { name: path.basename(fp), path: fp, content, size: stat.size, lastModified: new Date(stat.mtimeMs).toISOString() });
+      }
+    } catch {}
+  }
+  sendError(res, 'File not found', 404);
+}
+
+async function handleSaveMemoryFile(req, res, name) {
+  const body = await readBody(req);
+  if (!body.content && body.content !== '') return sendError(res, 'content is required', 400);
+  // 安全检查：只允许写入 .openclaw 下的文件
+  const fp = body.path || path.join(OPENCLAW_HOME, 'memory', name);
+  if (!fp.startsWith(OPENCLAW_HOME)) return sendError(res, 'Access denied', 403);
+  try {
+    const dir = path.dirname(fp);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(fp, body.content, 'utf-8');
+    sendJson(res, { ok: true });
+  } catch (e) { sendError(res, e.message); }
+}
+
+// ─────────────────────────────────────────────
+// API 实现 — 用量统计
+// ─────────────────────────────────────────────
+function handleGetUsage(req, res) {
+  const cfg = readConfig();
+  const agentList = (cfg && cfg.agents && cfg.agents.list) || [{ id: 'main' }];
+  const byAgent = {};
+  const byModel = {};
+  const daily = {};  // YYYY-MM-DD -> { in, out }
+  let totalIn = 0, totalOut = 0;
+
+  for (const agent of agentList) {
+    const sessionDir = findSessionDir(agent.id, agent);
+    if (!sessionDir) continue;
+    byAgent[agent.id] = { name: agent.name || agent.id, inputTokens: 0, outputTokens: 0, sessions: 0 };
+
+    try {
+      const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl') && !f.endsWith('.lock'));
+      byAgent[agent.id].sessions = files.length;
+
+      // 只分析最近的 session 文件（最多20个，避免过大开销）
+      const sorted = files.map(f => ({ name: f, mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 20);
+
+      for (const { name: f, mtime } of sorted) {
+        const fp = path.join(sessionDir, f);
+        try {
+          const raw = fs.readFileSync(fp, 'utf-8');
+          const day = new Date(mtime).toISOString().slice(0, 10);
+          for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj.usage) {
+                const inT = obj.usage.input_tokens || obj.usage.prompt_tokens || 0;
+                const outT = obj.usage.output_tokens || obj.usage.completion_tokens || 0;
+                byAgent[agent.id].inputTokens += inT;
+                byAgent[agent.id].outputTokens += outT;
+                totalIn += inT;
+                totalOut += outT;
+
+                const m = obj.model || 'unknown';
+                if (!byModel[m]) byModel[m] = { inputTokens: 0, outputTokens: 0 };
+                byModel[m].inputTokens += inT;
+                byModel[m].outputTokens += outT;
+
+                if (!daily[day]) daily[day] = { inputTokens: 0, outputTokens: 0 };
+                daily[day].inputTokens += inT;
+                daily[day].outputTokens += outT;
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // 转换为数组并排序
+  const dailyArr = Object.entries(daily)
+    .map(([date, d]) => ({ date, ...d, totalTokens: d.inputTokens + d.outputTokens }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-14); // 最近14天
+
+  const byAgentArr = Object.entries(byAgent)
+    .map(([id, d]) => ({ agentId: id, ...d, totalTokens: d.inputTokens + d.outputTokens }))
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+
+  const byModelArr = Object.entries(byModel)
+    .map(([model, d]) => ({ model, ...d, totalTokens: d.inputTokens + d.outputTokens }))
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+
+  sendJson(res, {
+    totals: { inputTokens: totalIn, outputTokens: totalOut, totalTokens: totalIn + totalOut },
+    byAgent: byAgentArr,
+    byModel: byModelArr,
+    daily: dailyArr,
+  });
 }
 
 // ─────────────────────────────────────────────

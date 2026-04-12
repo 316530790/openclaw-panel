@@ -67,6 +67,24 @@ async function renderOverview(container) {
             </div>
           </div>
         </div>
+
+        <div class="card ov-usage-card" id="ovUsageCard">
+          <div class="card-header">
+            <div class="card-title">
+              <svg class="card-title-icon" width="18" height="18"><use href="#ico-timer"/></svg>
+              用量概览
+            </div>
+            <a href="#usage" onclick="navigate('usage');return false" class="ov-link">详情 →</a>
+          </div>
+          <div class="card-body" id="ovUsageBody">
+            <div class="ov-gw-grid">
+              <div class="ov-gw-item"><span class="ov-gw-label">总 Token</span><span class="ov-gw-value" id="ovUsageTotal">--</span></div>
+              <div class="ov-gw-item"><span class="ov-gw-label">输入</span><span class="ov-gw-value" id="ovUsageIn">--</span></div>
+              <div class="ov-gw-item"><span class="ov-gw-label">输出</span><span class="ov-gw-value" id="ovUsageOut">--</span></div>
+              <div class="ov-gw-item"><span class="ov-gw-label">费用估算</span><span class="ov-gw-value" id="ovUsageCost">--</span></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="ov-col ov-col-side">
@@ -276,15 +294,17 @@ async function renderOverview(container) {
     </style>`;
 
   // 拉取数据
-  const [health, agents, sessions] = await Promise.allSettled([
+  const [health, agents, sessions, usage] = await Promise.allSettled([
     api('GET', '/api/sys-health'),
     api('GET', '/api/agents'),
     api('GET', '/api/sessions'),
+    api('GET', '/api/usage'),
   ]);
 
   if (health.status === 'fulfilled') updateOverviewStats(health.value);
   if (agents.status === 'fulfilled') renderOvAgents(agents.value);
   if (sessions.status === 'fulfilled') renderOvSessions(sessions.value);
+  if (usage.status === 'fulfilled') renderOvUsage(usage.value);
 }
 
 function updateOverviewStats(data) {
@@ -407,6 +427,24 @@ function renderOvSessions(sessions) {
       <span class="ov-session-time">${t}</span>
     </div>`;
   }).join('');
+}
+
+// 用量概览数据
+function renderOvUsage(data) {
+  if (!data || !data.totals) return;
+  const u = data.totals;
+  const fmtT = typeof formatTokens === 'function' ? formatTokens : n => n;
+  const el1 = document.getElementById('ovUsageTotal');
+  if (el1) el1.textContent = fmtT(u.totalTokens);
+  const el2 = document.getElementById('ovUsageIn');
+  if (el2) el2.textContent = fmtT(u.inputTokens);
+  const el3 = document.getElementById('ovUsageOut');
+  if (el3) el3.textContent = fmtT(u.outputTokens);
+  const el4 = document.getElementById('ovUsageCost');
+  if (el4) {
+    const cost = typeof estimateAllCost === 'function' ? estimateAllCost(data) : '--';
+    el4.textContent = '$' + cost;
+  }
 }
 
 // ─────────────────────────────────────────────

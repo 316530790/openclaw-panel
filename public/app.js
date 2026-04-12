@@ -23,7 +23,7 @@ const I18N = {
     page_overview: '概览', page_logs: '日志', page_providers: '供应商',
     page_agents: 'Agent 管理', page_channels: '渠道配置', page_tools: '工具配置',
     page_skills: '技能 & 插件', page_cron: '定时任务', page_settings: '系统设置', page_quickops: '快捷操作',
-    page_mcp: 'MCP 服务器', page_sandbox: '沙盒配置', page_memory: '记忆系统', page_hooks: 'Hooks 配置',
+    page_mcp: 'MCP 服务器', page_sandbox: '沙盒配置', page_memory: '记忆系统', page_hooks: 'Hooks 配置', page_usage: '用量统计',
     cpu: 'CPU 使用率', mem: '内存占用', disk: '磁盘占用', uptime: 'OpenClaw 运行时长',
     gateway: 'Gateway', online: '在线', offline: '离线',
     agent_matrix: 'Agent 矩阵', agent_status: '状态', active_sessions: '活跃会话',
@@ -75,7 +75,7 @@ const I18N = {
     page_overview: 'Overview', page_logs: 'Logs', page_providers: 'Providers',
     page_agents: 'Agents', page_channels: 'Channels', page_tools: 'Tools',
     page_skills: 'Skills & Plugins', page_cron: 'Cron Jobs', page_settings: 'Settings', page_quickops: 'Quick Ops',
-    page_mcp: 'MCP Servers', page_sandbox: 'Sandbox', page_memory: 'Memory System', page_hooks: 'Hooks Config',
+    page_mcp: 'MCP Servers', page_sandbox: 'Sandbox', page_memory: 'Memory System', page_hooks: 'Hooks Config', page_usage: 'Usage Statistics',
     cpu: 'CPU Usage', mem: 'Memory', disk: 'Disk', uptime: 'OpenClaw Uptime',
     gateway: 'Gateway', online: 'Online', offline: 'Offline',
     agent_matrix: 'Agent Matrix', agent_status: 'Status', active_sessions: 'Sessions',
@@ -310,7 +310,7 @@ const PAGE_TITLES = {
   agents: 'page_agents', channels: 'page_channels', tools: 'page_tools',
   skills: 'page_skills', cron: 'page_cron', settings: 'page_settings',
   quickops: 'page_quickops', mcp: 'page_mcp', sandbox: 'page_sandbox',
-  memory: 'page_memory', hooks: 'page_hooks',
+  memory: 'page_memory', hooks: 'page_hooks', usage: 'page_usage',
 };
 
 const PAGES = {};
@@ -330,6 +330,7 @@ function registerPages() {
   PAGES.sandbox = renderSandbox;
   PAGES.memory = renderMemory;
   PAGES.hooks = renderHooksPage;
+  PAGES.usage = renderUsage;
 }
 
 async function navigate(page) {

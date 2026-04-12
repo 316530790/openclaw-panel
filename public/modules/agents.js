@@ -502,9 +502,9 @@ function renderAgentSessions(sessions) {
   el.innerHTML = `<table class="data-table">
     <thead><tr><th>Agent</th><th>Session ID</th><th>状态</th><th>最近活动</th><th>大小</th></tr></thead>
     <tbody>${sessions.slice(0, 20).map(s => `
-      <tr>
+      <tr style="cursor:pointer" onclick="openSessionViewer('${esc(s.sessionId)}')">
         <td><span style="font-weight:500">${esc(s.agentName || s.agentId || '--')}</span></td>
-        <td class="mono" style="font-size:12px">${esc(s.sessionId?.slice(0, 24) || '--')}</td>
+        <td class="mono" style="font-size:12px;color:var(--brand)">${esc(s.sessionId?.slice(0, 24) || '--')}…</td>
         <td><span class="badge ${s.active ? 'badge-brand' : 'badge-gray'}">${s.active ? '运行中' : '空闲'}</span></td>
         <td style="color:var(--text-secondary);font-size:13px">${s.lastActivity ? timeAgo(s.lastActivity) : '--'}</td>
         <td style="color:var(--text-muted);font-size:13px">${typeof formatBytes === 'function' ? formatBytes(s.sizeBytes) : (s.sizeBytes || '--')}</td>
@@ -512,3 +512,233 @@ function renderAgentSessions(sessions) {
     </tbody>
   </table>`;
 }
+
+// ─────────────────────────────────────────────
+// 会话对话查看器 Modal
+// ─────────────────────────────────────────────
+async function openSessionViewer(sessionKey) {
+  // 创建模态层
+  let overlay = document.getElementById('session-viewer-overlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.id = 'session-viewer-overlay';
+  overlay.innerHTML = `
+    <style>
+      #session-viewer-overlay {
+        position: fixed; inset: 0; z-index: 10000;
+        background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
+        display: flex; align-items: center; justify-content: center;
+        animation: svFadeIn 0.2s ease;
+      }
+      @keyframes svFadeIn { from { opacity: 0 } to { opacity: 1 } }
+      .sv-dialog {
+        width: min(92vw, 860px); max-height: 88vh;
+        background: var(--surface); border-radius: 16px;
+        box-shadow: 0 24px 64px rgba(0,0,0,0.25);
+        display: flex; flex-direction: column; overflow: hidden;
+        animation: svSlide 0.25s ease;
+      }
+      @keyframes svSlide { from { transform: translateY(24px); opacity: 0 } }
+      .sv-header {
+        padding: 16px 20px; border-bottom: 1px solid var(--border);
+        display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+      }
+      .sv-header-info { flex: 1; min-width: 0; }
+      .sv-header-title { font-weight: 600; font-size: 15px; color: var(--text); }
+      .sv-header-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; display: flex; gap: 12px; flex-wrap: wrap; }
+      .sv-header-meta span { display: inline-flex; align-items: center; gap: 4px; }
+      .sv-close { background: none; border: none; cursor: pointer; padding: 6px; border-radius: 8px; color: var(--text-secondary); }
+      .sv-close:hover { background: var(--hover-bg); }
+      .sv-search {
+        padding: 8px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+      }
+      .sv-search input {
+        width: 100%; padding: 7px 12px; border: 1px solid var(--border);
+        border-radius: 8px; font-size: 13px; background: var(--bg);
+        color: var(--text); outline: none;
+      }
+      .sv-search input:focus { border-color: var(--brand); }
+      .sv-body {
+        flex: 1; overflow-y: auto; padding: 16px 20px;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .sv-msg { max-width: 88%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-break: break-word; }
+      .sv-msg--user { align-self: flex-end; background: var(--brand); color: #fff; border-bottom-right-radius: 4px; }
+      .sv-msg--assistant { align-self: flex-start; background: var(--surface-raised, #f5f5f5); color: var(--text); border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+      .sv-msg--tool { align-self: center; background: #f0f4ff; color: #555; font-size: 12px; border-radius: 8px; max-width: 94%; font-family: var(--font-mono, monospace); border: 1px dashed #c8d6e5; }
+      .sv-msg--system { align-self: center; color: var(--text-muted); font-size: 11px; font-style: italic; }
+      .sv-msg pre { margin: 6px 0 0; padding: 8px; background: rgba(0,0,0,0.06); border-radius: 6px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; }
+      .sv-msg--user pre { background: rgba(255,255,255,0.15); }
+      .sv-tool-tag { display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a56db; border-radius: 4px; font-size: 11px; font-weight: 500; margin-bottom: 4px; }
+      .sv-stats { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); flex-shrink: 0; flex-wrap: wrap; }
+      .sv-stats span { display: inline-flex; align-items: center; gap: 4px; }
+      .sv-loading { text-align: center; padding: 48px; color: var(--text-muted); }
+      .sv-highlight { background: #ffeb3b; color: #000; border-radius: 2px; padding: 0 2px; }
+    </style>
+    <div class="sv-dialog">
+      <div class="sv-header">
+        <div class="sv-header-info">
+          <div class="sv-header-title">📝 会话详情</div>
+          <div class="sv-header-meta" id="sv-meta"><span>加载中...</span></div>
+        </div>
+        <button class="sv-close" onclick="closeSessionViewer()" title="关闭">
+          <svg width="20" height="20"><use href="#ico-x"/></svg>
+        </button>
+      </div>
+      <div class="sv-search">
+        <input type="text" id="sv-search-input" placeholder="搜索消息内容..." oninput="filterSessionMessages(this.value)" />
+      </div>
+      <div class="sv-body" id="sv-messages">
+        <div class="sv-loading">⏳ 加载会话消息中...</div>
+      </div>
+      <div class="sv-stats" id="sv-stats"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSessionViewer(); });
+  document.addEventListener('keydown', _svEscHandler);
+
+  // 请求数据
+  try {
+    const data = await api('GET', `/api/sessions/${encodeURIComponent(sessionKey)}/messages`);
+    window._svMessages = data.messages || [];
+    window._svData = data;
+    renderSessionViewerContent(data);
+  } catch (e) {
+    const el = document.getElementById('sv-messages');
+    if (el) el.innerHTML = `<div class="sv-loading" style="color:#e74c3c">❌ 加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function _svEscHandler(e) {
+  if (e.key === 'Escape') closeSessionViewer();
+}
+
+function closeSessionViewer() {
+  const overlay = document.getElementById('session-viewer-overlay');
+  if (overlay) overlay.remove();
+  document.removeEventListener('keydown', _svEscHandler);
+  window._svMessages = null;
+  window._svData = null;
+}
+
+function renderSessionViewerContent(data) {
+  // 头部信息
+  const metaEl = document.getElementById('sv-meta');
+  if (metaEl) {
+    metaEl.innerHTML = `
+      <span>🤖 ${esc(data.agentId || '--')}</span>
+      <span>🧠 ${esc(data.model || '--')}</span>
+      <span>💬 ${data.messageCount || 0} 条消息</span>
+      <span>📄 ${typeof formatBytes === 'function' ? formatBytes(data.sizeBytes) : data.sizeBytes}</span>
+    `;
+  }
+
+  // 消息列表
+  const bodyEl = document.getElementById('sv-messages');
+  if (bodyEl) {
+    if (!data.messages || !data.messages.length) {
+      bodyEl.innerHTML = `<div class="sv-loading">📭 此会话暂无可显示的消息</div>`;
+    } else {
+      bodyEl.innerHTML = data.messages.map(m => renderSvMessage(m)).join('');
+      bodyEl.scrollTop = bodyEl.scrollHeight;
+    }
+  }
+
+  // 底部统计
+  const statsEl = document.getElementById('sv-stats');
+  if (statsEl && data.usage) {
+    const u = data.usage;
+    statsEl.innerHTML = `
+      <span>📥 输入: ${formatTokens(u.inputTokens)}</span>
+      <span>📤 输出: ${formatTokens(u.outputTokens)}</span>
+      <span>📊 合计: ${formatTokens(u.totalTokens)}</span>
+      <span>💰 估算: $${estimateCost(u.inputTokens, u.outputTokens, data.model)}</span>
+    `;
+  }
+}
+
+function renderSvMessage(msg) {
+  const role = (msg.role || '').toLowerCase();
+
+  if (role === 'user') {
+    return `<div class="sv-msg sv-msg--user">${formatMsgContent(msg.content)}</div>`;
+  }
+  if (role === 'tool') {
+    const toolLabel = msg.toolName ? `<div class="sv-tool-tag">🔧 ${esc(msg.toolName)}</div>` : '';
+    const content = msg.content ? `<pre>${esc(msg.content.slice(0, 500))}${msg.content.length > 500 ? '...' : ''}</pre>` : '';
+    return `<div class="sv-msg sv-msg--tool">${toolLabel}${content}</div>`;
+  }
+  if (role === 'assistant') {
+    let toolHtml = '';
+    if (msg.toolCalls && msg.toolCalls.length) {
+      toolHtml = msg.toolCalls.map(tc =>
+        `<div class="sv-tool-tag">🔧 ${esc(tc.name)}</div>`
+      ).join('');
+    }
+    return `<div class="sv-msg sv-msg--assistant">${toolHtml}${formatMsgContent(msg.content)}</div>`;
+  }
+  if (role === 'system') {
+    return `<div class="sv-msg sv-msg--system">⚙️ ${esc((msg.content || '').slice(0, 200))}</div>`;
+  }
+  return `<div class="sv-msg sv-msg--assistant">${formatMsgContent(msg.content)}</div>`;
+}
+
+function formatMsgContent(content) {
+  if (!content) return '<em style="opacity:0.5">(空)</em>';
+  // 简单 markdown 渲染
+  let html = esc(content);
+  // code blocks
+  html = html.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
+  // inline code
+  html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.06);padding:1px 4px;border-radius:3px;font-size:12px">$1</code>');
+  // bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // newlines
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
+function filterSessionMessages(query) {
+  const messages = window._svMessages;
+  if (!messages) return;
+  const bodyEl = document.getElementById('sv-messages');
+  if (!bodyEl) return;
+
+  if (!query.trim()) {
+    bodyEl.innerHTML = messages.map(m => renderSvMessage(m)).join('');
+    return;
+  }
+
+  const q = query.toLowerCase();
+  const filtered = messages.filter(m =>
+    (m.content || '').toLowerCase().includes(q) ||
+    (m.toolName || '').toLowerCase().includes(q) ||
+    (m.toolCalls || []).some(tc => tc.name.toLowerCase().includes(q))
+  );
+  bodyEl.innerHTML = filtered.length
+    ? filtered.map(m => renderSvMessage(m)).join('')
+    : `<div class="sv-loading">🔍 未找到匹配消息</div>`;
+}
+
+function formatTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toString();
+}
+
+function estimateCost(inTokens, outTokens, model) {
+  // 大致估算（基于常见模型定价）
+  const m = (model || '').toLowerCase();
+  let inPrice = 3, outPrice = 15; // 默认 GPT-4 级别 per 1M tokens
+  if (m.includes('gpt-3.5') || m.includes('mini')) { inPrice = 0.15; outPrice = 0.6; }
+  else if (m.includes('gpt-4o') || m.includes('4o')) { inPrice = 2.5; outPrice = 10; }
+  else if (m.includes('claude') && m.includes('haiku')) { inPrice = 0.25; outPrice = 1.25; }
+  else if (m.includes('claude') && m.includes('sonnet')) { inPrice = 3; outPrice = 15; }
+  else if (m.includes('claude') && m.includes('opus')) { inPrice = 15; outPrice = 75; }
+  else if (m.includes('deepseek')) { inPrice = 0.27; outPrice = 1.1; }
+  const cost = (inTokens / 1000000) * inPrice + (outTokens / 1000000) * outPrice;
+  return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2);
+}
+
