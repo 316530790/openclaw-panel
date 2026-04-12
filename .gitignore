@@ -4,3 +4,6 @@ node_modules/
 .env
 openclaw-panel.pid
 fix-*.js
+logs/
+.panel-watchdog.json
+.claude/

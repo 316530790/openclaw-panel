@@ -8,7 +8,13 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop openclaw-panel",
+    "pm2:restart": "pm2 restart openclaw-panel",
+    "pm2:status": "pm2 status",
+    "pm2:logs": "pm2 logs openclaw-panel",
+    "pm2:setup": "pm2 start ecosystem.config.js && pm2 save && pm2 startup"
   },
   "dependencies": {
     "json5": "^2.2.3"
