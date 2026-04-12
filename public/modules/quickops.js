@@ -257,14 +257,20 @@ function quickDoctor() {
   });
 }
 
-let _preUpgradeVersion = null;  // 记住升级前的版本号
+// 持久化保存升级前版本号, 刷新页面后仍可回退
+function _getPreUpgradeVersion() {
+  try { return localStorage.getItem('openclaw_pre_upgrade_ver') || null; } catch { return null; }
+}
+function _setPreUpgradeVersion(ver) {
+  try { if (ver) localStorage.setItem('openclaw_pre_upgrade_ver', ver); else localStorage.removeItem('openclaw_pre_upgrade_ver'); } catch {}
+}
 
 function quickUpdate() {
   toast('正在检查更新...', 'info');
   showOpsOutput('overview', '版本检查', '正在查询 NPM 仓库...\n');
   api('POST', '/api/cmd/upgrade').then(data => {
     if (data.success) {
-      _preUpgradeVersion = data.current || null;
+      _setPreUpgradeVersion(data.current || null);
       let content = `当前版本: ${data.current || '未知'}\n最新版本: ${data.latest || '未知'}\n`;
       if (data.needsUpdate) {
         content += '\n⬆ 发现新版本！';
@@ -275,9 +281,14 @@ function quickUpdate() {
       }
       showOpsOutput('overview', '版本检查', content);
       // 显示操作按钮
+      const savedPrev = _getPreUpgradeVersion();
       if (data.needsUpdate) {
         showUpgradeFooter(`将执行 npm install -g openclaw@latest`,
           `<button class="btn btn-primary btn-sm" id="doUpgradeBtn" onclick="doUpgrade()">一键升级</button>`);
+      } else if (savedPrev && savedPrev !== data.current) {
+        // 已升级过但还能回退
+        showUpgradeFooter(`当前: ${data.current}  ←  旧版: ${savedPrev}`,
+          `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${savedPrev}')">回退到 ${savedPrev}</button>`);
       }
     } else {
       showOpsOutput('overview', '版本检查', '检查失败: ' + (data.error || ''));
@@ -316,10 +327,10 @@ async function doUpgrade() {
       toast('升级完成！建议重启 Gateway', 'success');
       showOpsOutput('overview', '升级结果', output);
       // 显示回退按钮
-      const rollbackBtns = _preUpgradeVersion
-        ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_preUpgradeVersion}')">回退到 ${_preUpgradeVersion}</button>`
+      const rollbackBtns = _getPreUpgradeVersion()
+        ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_getPreUpgradeVersion()}')">回退到 ${_getPreUpgradeVersion()}</button>`
         : '';
-      showUpgradeFooter(`当前: ${data.newVersion || '?'}  ←  旧版: ${_preUpgradeVersion || '?'}`, rollbackBtns);
+      showUpgradeFooter(`当前: ${data.newVersion || '?'}  ←  旧版: ${_getPreUpgradeVersion() || '?'}`, rollbackBtns);
     } else {
       output += `\n✗ 升级失败: ${data.error || '未知错误'}`;
       toast('升级失败', 'error');
@@ -327,7 +338,7 @@ async function doUpgrade() {
       // 失败也显示回退和重试
       const btns = [
         `<button class="btn btn-primary btn-sm" id="doUpgradeBtn" onclick="doUpgrade()">重试</button>`,
-        _preUpgradeVersion ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_preUpgradeVersion}')">回退到 ${_preUpgradeVersion}</button>` : '',
+        _getPreUpgradeVersion() ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_getPreUpgradeVersion()}')">回退到 ${_getPreUpgradeVersion()}</button>` : '',
       ].filter(Boolean).join('');
       showUpgradeFooter('升级失败', btns);
     }
@@ -352,6 +363,7 @@ async function doRollback(version) {
         output += `\n✓ 回退完成！当前版本: ${data.newVersion || '未知'}`;
         toast('回退完成！建议重启 Gateway', 'success');
         showOpsOutput('overview', '回退结果', output);
+        _setPreUpgradeVersion(null); // 清除记录
         showUpgradeFooter(`已回退到 ${data.newVersion || version}`, '');
       } else {
         output += `\n✗ 回退失败: ${data.error || '未知错误'}`;

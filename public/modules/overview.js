@@ -24,45 +24,129 @@ async function renderOverview(container) {
         </div>`).join('')}
     </div>
 
-    <div class="card" style="margin-bottom:16px">
-        <div class="card-header">
-          <div class="card-title">
-            <svg class="card-title-icon" width="18" height="18"><use href="#ico-agents"/></svg>
-            ${t('agent_matrix')}
-          </div>
-          <a href="#quickops" onclick="navigate('quickops')" class="btn btn-sm btn-ghost" style="font-size:12px">
-            快捷操作 →
-          </a>
+    <div class="overview-quick-strip" id="agentStripCard">
+      <div class="overview-strip-row">
+        <div class="overview-strip-left">
+          <svg width="16" height="16" style="opacity:0.6"><use href="#ico-agents"/></svg>
+          <span class="overview-strip-label" id="agentStripSummary">加载中...</span>
         </div>
-        <div class="card-body">
-          <div id="agentGrid" class="agent-grid">
-            <div class="empty-state"><div class="spinner"></div></div>
-          </div>
-        </div>
+        <a href="#agents" onclick="navigate('agents');return false" class="overview-strip-link">查看详情 →</a>
       </div>
+      <div id="agentStripDots" class="overview-strip-dots"></div>
+    </div>
 
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">
-          <svg class="card-title-icon" width="18" height="18"><use href="#ico-logs"/></svg>
-          ${t('active_sessions')}
-        </div>
+    <div class="overview-quick-strip" id="quickLinksCard">
+      <div class="overview-strip-row" style="flex-wrap:wrap;gap:8px">
+        <button class="overview-quick-btn" onclick="navigate('quickops')">
+          <svg width="14" height="14"><use href="#ico-quickops"/></svg> 快捷操作
+        </button>
+        <button class="overview-quick-btn" onclick="navigate('providers')">
+          <svg width="14" height="14"><use href="#ico-provider"/></svg> 供应商
+        </button>
+        <button class="overview-quick-btn" onclick="navigate('logs')">
+          <svg width="14" height="14"><use href="#ico-logs"/></svg> 日志
+        </button>
+        <button class="overview-quick-btn" onclick="navigate('settings')">
+          <svg width="14" height="14"><use href="#ico-settings"/></svg> 设置
+        </button>
       </div>
-      <div class="card-body" style="padding:0">
-        <div id="sessionList"></div>
-      </div>
-    </div>`;
+    </div>
+
+    <style>
+      .overview-quick-strip {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+      }
+      .overview-strip-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .overview-strip-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .overview-strip-label {
+        font-size: 13.5px;
+        color: var(--text-secondary);
+        font-weight: 500;
+      }
+      .overview-strip-link {
+        font-size: 12.5px;
+        color: var(--brand);
+        text-decoration: none;
+        white-space: nowrap;
+        font-weight: 500;
+      }
+      .overview-strip-link:hover { text-decoration: underline; }
+      .overview-strip-dots {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+      .overview-agent-dot {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px 4px 8px;
+        border-radius: 20px;
+        font-size: 12.5px;
+        font-weight: 500;
+        background: var(--bg-secondary);
+        color: var(--text-primary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+        border: 1px solid transparent;
+      }
+      .overview-agent-dot:hover {
+        border-color: var(--border-brand);
+        background: var(--bg-hover);
+      }
+      .overview-agent-dot-status {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .overview-agent-dot-status.is-working { background: var(--green); box-shadow: 0 0 6px var(--green); }
+      .overview-agent-dot-status.is-idle { background: var(--text-muted); opacity: 0.5; }
+      .overview-quick-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        background: var(--bg-secondary);
+        color: var(--text-primary);
+        border: 1px solid var(--border);
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .overview-quick-btn:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-brand);
+        color: var(--brand);
+      }
+    </style>`;
 
   // 拉取数据
-  const [health, agents, sessions] = await Promise.allSettled([
+  const [health, agents] = await Promise.allSettled([
     api('GET', '/api/sys-health'),
     api('GET', '/api/agents'),
-    api('GET', '/api/sessions'),
   ]);
 
   if (health.status === 'fulfilled') updateOverviewStats(health.value);
-  if (agents.status === 'fulfilled') renderAgentMatrix(agents.value);
-  if (sessions.status === 'fulfilled') renderSessionList(sessions.value);
+  if (agents.status === 'fulfilled') renderAgentStrip(agents.value);
 }
 
 function updateOverviewStats(data) {
@@ -128,65 +212,34 @@ async function quickDoctor() {
   } catch (e) { toast('诊断失败: ' + e.message, 'error'); }
 }
 
-async function quickUpdate() {
-  toast('正在检查更新...', 'info', 2000);
-  try {
-    await api('POST', '/api/cmd/restart'); // 通过 openclaw doctor 检查
-    toast('已触发更新检查，请查看 Gateway 日志', 'info', 4000);
-  } catch (e) { toast('操作失败: ' + e.message, 'error'); }
-}
+// 概览页 Agent 摘要条：精简显示 + 点击跳转
+function renderAgentStrip(agents) {
+  const summaryEl = document.getElementById('agentStripSummary');
+  const dotsEl = document.getElementById('agentStripDots');
+  if (!summaryEl || !dotsEl) return;
 
-function renderAgentMatrix(agents) {
-  const grid = document.getElementById('agentGrid');
-  if (!grid) return;
   const list = (agents && agents.list) || [];
   if (!list.length) {
-    grid.innerHTML = `<div class="empty-state"><svg class="empty-icon"><use href="#ico-agents"/></svg><div class="empty-title">${t('no_data')}</div></div>`;
+    summaryEl.textContent = '暂无 Agent';
+    dotsEl.innerHTML = '';
     return;
   }
-  grid.innerHTML = list.map(a => {
-    const status = a._status || 'idle';
-    const model = typeof a.model === 'object' ? (a.model.primary || '') : (a.model || '');
-    const initials = (a.name || a.id || 'A').slice(0, 2).toUpperCase();
-    return `
-      <div class="agent-card">
-        <div class="agent-card-top">
-          <div class="agent-avatar" title="${esc(a.id)}">${initials}</div>
-          <div class="agent-info">
-            <div class="agent-name">${esc(a.name || a.id)}</div>
-            <div class="agent-model">${esc(model || '--')}</div>
-          </div>
-          <span class="status-dot ${status === 'working' ? 'dot-working' : 'dot-online'}"></span>
-        </div>
-        <div style="font-size:11.5px;color:var(--text-muted)">${a._session ? esc(a._session.slice(0,28)) : '无活跃会话'}</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px">
-          <span class="badge ${status === 'working' ? 'badge-brand' : 'badge-green'}">${status === 'working' ? t('working') : t('idle')}</span>
-          ${a._lastActivity ? `<span style="font-size:11px;color:var(--text-muted)">${new Date(a._lastActivity).toLocaleTimeString()}</span>` : ''}
-        </div>
-      </div>`;
-  }).join('');
-}
 
-function renderSessionList(sessions) {
-  const el = document.getElementById('sessionList');
-  if (!el) return;
-  if (!sessions || !sessions.length) {
-    el.innerHTML = `<div class="empty-state">
-      <svg class="empty-icon"><use href="#ico-logs"/></svg>
-      <div class="empty-title">${t('no_data')}</div>
+  const working = list.filter(a => a._status === 'working').length;
+  const totalSessions = list.reduce((sum, a) => sum + (a._sessionCount || 0), 0);
+
+  summaryEl.innerHTML = `<strong>${list.length}</strong> 个 Agent` +
+    (working > 0 ? ` · <span style="color:var(--green)">${working} 个运行中</span>` : ' · 全部空闲') +
+    ` · ${totalSessions} 个会话`;
+
+  dotsEl.innerHTML = list.map(a => {
+    const avatar = typeof getAgentAvatar === 'function' ? getAgentAvatar(a.id) : null;
+    const emoji = avatar ? avatar.emoji : '🤖';
+    const isWorking = a._status === 'working';
+    return `<div class="overview-agent-dot" onclick="navigate('agents')" title="${esc(a.id)}: ${isWorking ? '运行中' : '空闲'}${a._sessionCount ? ' · ' + a._sessionCount + ' 个会话' : ''}">
+      <span class="overview-agent-dot-status ${isWorking ? 'is-working' : 'is-idle'}"></span>
+      <span>${emoji}</span>
+      <span>${esc(a.name || a.id)}</span>
     </div>`;
-    return;
-  }
-  el.innerHTML = `<table class="data-table">
-    <thead><tr><th>Agent</th><th>Session ID</th><th>状态</th><th>最近活动</th><th>大小</th></tr></thead>
-    <tbody>${sessions.slice(0, 10).map(s => `
-      <tr>
-        <td><span style="font-weight:500">${esc(s.agentName || s.agentId)}</span></td>
-        <td class="mono">${esc(s.sessionId?.slice(0, 24) || '--')}</td>
-        <td><span class="badge ${s.active ? 'badge-brand' : 'badge-gray'}">${s.active ? t('working') : t('idle')}</span></td>
-        <td style="color:var(--text-secondary)">${s.lastActivity ? new Date(s.lastActivity).toLocaleString() : '--'}</td>
-        <td style="color:var(--text-muted)">${formatBytes(s.sizeBytes)}</td>
-      </tr>`).join('')}
-    </tbody>
-  </table>`;
+  }).join('');
 }

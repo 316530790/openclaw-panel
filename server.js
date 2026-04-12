@@ -618,9 +618,40 @@ async function handleSysHealth(req, res) {
 // API 实现 — 供应商
 // ─────────────────────────────────────────────
 function handleGetProviders(req, res) {
-  const cfg = readConfig();
-  const providers = (cfg && cfg.models && cfg.models.providers) || {};
-  sendJson(res, redactConfig(providers));
+  const cfg = readConfig() || {};
+  // 兼容两种配置结构：models.providers（旧）和 auth.profiles（新）
+  const modelsProviders = (cfg.models && cfg.models.providers) || {};
+  const authProfiles = (cfg.auth && cfg.auth.profiles) || {};
+  // 合并：auth.profiles 优先显示
+  const merged = { ...modelsProviders };
+  for (const [key, profile] of Object.entries(authProfiles)) {
+    // auth.profiles 的 key 格式: "provider-name:profile-name"
+    const providerId = profile.provider || key.split(':')[0] || key;
+    if (!merged[providerId]) {
+      merged[providerId] = {
+        ...profile,
+        _source: 'auth.profiles',
+        _profileKey: key,
+      };
+    }
+  }
+  sendJson(res, redactConfig(merged));
+}
+
+// 辅助：定位供应商实际存储路径
+function locateProvider(cfg, id) {
+  if (cfg.models && cfg.models.providers && cfg.models.providers[id]) {
+    return { source: 'models', path: ['models', 'providers', id], data: cfg.models.providers[id] };
+  }
+  if (cfg.auth && cfg.auth.profiles) {
+    for (const [key, profile] of Object.entries(cfg.auth.profiles)) {
+      const providerId = profile.provider || key.split(':')[0];
+      if (providerId === id) {
+        return { source: 'auth', path: ['auth', 'profiles', key], data: profile, profileKey: key };
+      }
+    }
+  }
+  return null;
 }
 
 async function handleCreateProvider(req, res) {
@@ -628,7 +659,12 @@ async function handleCreateProvider(req, res) {
   const { id, config: provCfg } = body;
   if (!id || !provCfg) return sendError(res, 'id 和 config 是必填项', 400);
   try {
-    patchConfig(['models', 'providers', id], provCfg);
+    if (provCfg.baseUrl) {
+      patchConfig(['models', 'providers', id], provCfg);
+    } else {
+      const profileKey = `${id}:default`;
+      patchConfig(['auth', 'profiles', profileKey], { provider: id, ...provCfg });
+    }
     sendJson(res, { ok: true });
   } catch (e) { sendError(res, e.message); }
 }
@@ -636,9 +672,14 @@ async function handleCreateProvider(req, res) {
 async function handleUpdateProvider(req, res, id) {
   const body = await readBody(req);
   const cfg = readConfig() || {};
-  const original = (cfg.models && cfg.models.providers && cfg.models.providers[id]) || {};
+  const loc = locateProvider(cfg, id);
   try {
-    patchConfig(['models', 'providers', id], restoreRedacted(original, body));
+    if (loc) {
+      const merged = restoreRedacted(loc.data, body);
+      patchConfig(loc.path, merged);
+    } else {
+      patchConfig(['models', 'providers', id], body);
+    }
     sendJson(res, { ok: true });
   } catch (e) { sendError(res, e.message); }
 }
@@ -646,23 +687,30 @@ async function handleUpdateProvider(req, res, id) {
 async function handleDeleteProvider(req, res, id) {
   try {
     const cfg = readConfig() || {};
-    if (cfg.models && cfg.models.providers) {
-      delete cfg.models.providers[id];
+    const loc = locateProvider(cfg, id);
+    if (loc) {
+      deleteNestedValue(cfg, loc.path);
       try { fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak'); } catch {}
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+      _configCache = null; _configMtimeMs = 0;
     }
     sendJson(res, { ok: true });
   } catch (e) { sendError(res, e.message); }
 }
 
 async function handleTestProvider(req, res, id) {
-  const cfg = readConfig();
-  const prov = cfg && cfg.models && cfg.models.providers && cfg.models.providers[id];
+  const cfg = readConfig() || {};
+  const loc = locateProvider(cfg, id);
+  const prov = loc ? loc.data : null;
   if (!prov) return sendError(res, '供应商不存在', 404);
+
+  if (loc.source === 'auth' && !prov.baseUrl) {
+    return sendJson(res, { ok: true, status: 0, message: 'OAuth 供应商，无需连通测试' });
+  }
+
   const baseUrl = (prov.baseUrl || '').replace(/\/$/, '');
   if (!baseUrl) return sendError(res, 'baseUrl 未配置', 400);
 
-  // 尝试 GET {baseUrl}/models
   const testUrl = `${baseUrl}/models`;
   const apiKey = prov.apiKey;
   const headers = { 'Content-Type': 'application/json' };
@@ -671,7 +719,6 @@ async function handleTestProvider(req, res, id) {
   }
 
   try {
-    // 使用内置 https/http 模块
     const mod = testUrl.startsWith('https') ? require('https') : require('http');
     const urlObj = new URL(testUrl);
     const options = { hostname: urlObj.hostname, port: urlObj.port || (testUrl.startsWith('https') ? 443 : 80), path: urlObj.pathname + urlObj.search, method: 'GET', headers, timeout: 8000 };
@@ -691,11 +738,35 @@ async function handleTestProvider(req, res, id) {
 // API 实现 — Agent
 // ─────────────────────────────────────────────
 function handleGetAgents(req, res) {
-  const cfg = readConfig();
-  if (!cfg) return sendJson(res, { defaults: {}, list: [] });
-
+  const cfg = readConfig() || {};
   const defaults = (cfg.agents && cfg.agents.defaults) || {};
+
+  // 从配置中的 agents.list 读取（旧模式）
   let list = (cfg.agents && cfg.agents.list) || [];
+
+  // 从磁盘 ~/.openclaw/agents/ 目录发现 agent（新模式）
+  const agentsDir = path.join(OPENCLAW_HOME, 'agents');
+  try {
+    if (fs.existsSync(agentsDir)) {
+      const dirs = fs.readdirSync(agentsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
+      for (const dirName of dirs) {
+        // 跳过已在 list 中的
+        if (list.find(a => a.id === dirName)) continue;
+        const agentMeta = { id: dirName, name: dirName, _source: 'disk' };
+        // 尝试读取 agent 目录下的元信息
+        try {
+          const modelsPath = path.join(agentsDir, dirName, 'agent', 'models.json');
+          if (fs.existsSync(modelsPath)) {
+            const m = JSON.parse(fs.readFileSync(modelsPath, 'utf-8'));
+            agentMeta._providers = m.providers ? Object.keys(m.providers) : [];
+          }
+        } catch {}
+        list.push(agentMeta);
+      }
+    }
+  } catch {}
 
   // 补充运行时状态
   list = list.map(agent => {
@@ -703,22 +774,44 @@ function handleGetAgents(req, res) {
     a._status = 'idle';
     a._session = null;
     a._lastActivity = null;
+    a._sessionCount = 0;
     try {
-      const sessionDir = findSessionDir(a.id, a);
-      if (sessionDir) {
+      const sessionDir = path.join(agentsDir, a.id, 'sessions');
+      if (fs.existsSync(sessionDir)) {
+        // 读取 sessions.json 获取详细元数据（同 control-center 做法）
+        const sessionsJsonPath = path.join(sessionDir, 'sessions.json');
+        let sessionsMap = {};
+        try {
+          if (fs.existsSync(sessionsJsonPath)) {
+            sessionsMap = JSON.parse(fs.readFileSync(sessionsJsonPath, 'utf-8')) || {};
+          }
+        } catch {}
+
+        const sessionEntries = Object.entries(sessionsMap);
+        a._sessionCount = sessionEntries.length;
+
+        // 找到最近活跃的会话
+        if (sessionEntries.length > 0) {
+          const sorted = sessionEntries.sort(([, v1], [, v2]) =>
+            ((v2 && v2.updatedAt) || 0) - ((v1 && v1.updatedAt) || 0)
+          );
+          const [latestKey, latestSession] = sorted[0];
+          if (latestSession) {
+            a._lastActivity = latestSession.updatedAt
+              ? new Date(latestSession.updatedAt).toISOString()
+              : null;
+            a._session = latestSession.sessionId || latestKey;
+            a._lastChannel = latestSession.lastChannel || latestSession.origin?.channel || null;
+            a._chatType = latestSession.chatType || null;
+          }
+        }
+
+        // 检查锁文件判断是否正在运行
         const files = fs.readdirSync(sessionDir);
         const locks = files.filter(f => f.endsWith('.lock'));
         if (locks.length > 0) {
           a._status = 'working';
           a._session = locks[0].replace('.jsonl.lock', '');
-        }
-        const jsonls = files.filter(f => f.endsWith('.jsonl') && !f.endsWith('.lock'));
-        if (jsonls.length > 0) {
-          const latest = jsonls.sort((a, b) =>
-            fs.statSync(path.join(sessionDir, b)).mtimeMs - fs.statSync(path.join(sessionDir, a)).mtimeMs
-          )[0];
-          a._lastActivity = new Date(fs.statSync(path.join(sessionDir, latest)).mtimeMs).toISOString();
-          if (!a._session) a._session = latest.replace('.jsonl', '');
         }
       }
     } catch {}
@@ -1161,6 +1254,13 @@ function handleCmdDoctor(req, res) {
   });
 }
 
+// 从 "OpenClaw 2026.3.13 (61d171a)" 中提取纯版本号 "2026.3.13"
+function cleanVersion(raw) {
+  const s = (raw || '').trim();
+  const m = s.match(/(\d+\.\d+\.\d+(?:[-.][\w.]+)*)/);
+  return m ? m[1] : s;
+}
+
 function handleCmdUpgrade(req, res) {
   const isWin = os.platform() === 'win32';
   const shell = isWin ? 'powershell' : true;
@@ -1171,7 +1271,7 @@ function handleCmdUpgrade(req, res) {
     const latestVer = (stdout || '').trim();
     const verCmd = isWin ? 'openclaw.cmd --version' : 'openclaw --version';
     exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
-      const currentVer = (stdout2 || '').trim();
+      const currentVer = cleanVersion(stdout2);
       const needsUpdate = latestVer && currentVer && latestVer !== currentVer;
       sendJson(res, {
         success: true,
@@ -1203,7 +1303,7 @@ function handleCmdDoUpgrade(req, res) {
       exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
         sendJson(res, {
           success: true,
-          newVersion: (stdout2 || '').trim(),
+          newVersion: cleanVersion(stdout2),
           stdout: stdout || '',
           stderr: stderr || '',
         });

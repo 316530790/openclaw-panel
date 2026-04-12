@@ -93,24 +93,63 @@ function renderProviderTable(providers) {
   const entries = Object.entries(providers || {});
   if (!entries.length) return `<div class="empty-state"><svg class="empty-icon"><use href="#ico-providers"/></svg><div class="empty-title">${t('no_data')}</div><div class="empty-desc">点击上方预设或"新增供应商"按钮添加</div></div>`;
   return `<table class="data-table">
-    <thead><tr><th>ID</th><th>Base URL</th><th>模型数</th><th>操作</th></tr></thead>
-    <tbody>${entries.map(([id, prov]) => `
+    <thead><tr><th>ID</th><th>信息</th><th>认证</th><th>操作</th></tr></thead>
+    <tbody>${entries.map(([id, prov]) => {
+      const isAuthProfile = prov._source === 'auth.profiles';
+      const info = isAuthProfile
+        ? (prov.mode || '--')
+        : (prov.baseUrl || '--');
+      const authBadge = isAuthProfile
+        ? `<span class="badge badge-green">${prov.mode || 'oauth'}</span>`
+        : `<span class="badge badge-blue">${Array.isArray(prov.models) ? prov.models.length + ' 模型' : prov.auth || '--'}</span>`;
+      const actions = isAuthProfile
+        ? `<button class="btn btn-sm" onclick="openEditProviderModal('${esc(id)}')" title="查看"><svg width="13" height="13"><use href="#ico-info"/></svg></button>`
+        : `<button class="btn btn-sm" onclick="openEditProviderModal('${esc(id)}')"><svg width="13" height="13"><use href="#ico-edit"/></svg></button>
+           <button class="btn btn-sm" onclick="testProvider('${esc(id)}', this)"><svg width="13" height="13"><use href="#ico-zap"/></svg></button>
+           <button class="btn btn-sm btn-danger" onclick="deleteProvider('${esc(id)}')"><svg width="13" height="13"><use href="#ico-trash"/></svg></button>`;
+      return `
       <tr>
         <td class="mono">${esc(id)}</td>
-        <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(prov.baseUrl || '--')}</td>
-        <td><span class="badge badge-blue">${Array.isArray(prov.models) ? prov.models.length : 0} 个</span></td>
-        <td>
-          <button class="btn btn-sm" onclick="openEditProviderModal('${esc(id)}')"><svg width="13" height="13" style="flex-shrink:0"><use href="#ico-edit"/></svg></button>
-          <button class="btn btn-sm" onclick="testProvider('${esc(id)}', this)"><svg width="13" height="13" style="flex-shrink:0"><use href="#ico-zap"/></svg></button>
-          <button class="btn btn-sm btn-danger" onclick="deleteProvider('${esc(id)}')"><svg width="13" height="13" style="flex-shrink:0"><use href="#ico-trash"/></svg></button>
-        </td>
-      </tr>`).join('')}
+        <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(info)}</td>
+        <td>${authBadge}</td>
+        <td>${actions}</td>
+      </tr>`;
+    }).join('')}
     </tbody>
   </table>`;
 }
 
 function providerFormHtml(id, prov) {
   prov = prov || {};
+  const isAuthProfile = prov._source === 'auth.profiles';
+
+  if (isAuthProfile) {
+    // auth.profiles 供应商：简洁表单
+    return `
+    <div class="form-group">
+      <label class="form-label">${t('provider_name')}</label>
+      <input type="text" id="prov_id" class="form-input mono" value="${esc(id || '')}" readonly />
+    </div>
+    <div class="form-group">
+      <label class="form-label">认证模式</label>
+      <select id="prov_mode" class="form-select">
+        ${['oauth','api-key','token','aws-sdk'].map(v => `<option value="${v}" ${(prov.mode||'oauth')===v?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Base URL (可选)</label>
+      <input type="url" id="prov_baseUrl" class="form-input mono" value="${esc(prov.baseUrl || '')}" placeholder="留空使用默认" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">API Key (可选)</label>
+      ${secretInput('prov_apiKey', prov.apiKey, 'sk-...')}
+      <div class="form-hint">OAuth 模式无需填写 API Key</div>
+    </div>
+    <input type="hidden" id="prov_source" value="auth" />
+    <input type="hidden" id="prov_profileKey" value="${esc(prov._profileKey || '')}" />`;
+  }
+
+  // models.providers 供应商：完整表单
   const modelsJson = JSON.stringify(prov.models || [], null, 2);
   return `
     <div class="form-group">
@@ -136,7 +175,8 @@ function providerFormHtml(id, prov) {
       <label class="form-label">${t('provider_models')}</label>
       <textarea id="prov_models" class="form-textarea mono" rows="8" placeholder='[]'>${esc(modelsJson)}</textarea>
       <div class="form-hint">JSON 数组，每个模型需要: id, name, reasoning, input, cost, contextWindow, maxTokens</div>
-    </div>`;
+    </div>
+    <input type="hidden" id="prov_source" value="models" />`;
 }
 
 function openAddProviderModal() {
@@ -196,26 +236,42 @@ async function addPresetProvider(presetId) {
 async function saveProvider(existingId) {
   const id = existingId || (document.getElementById('prov_id')?.value || '').trim();
   if (!id) { toast(t('required_field') + ': ID', 'error'); return; }
-  const baseUrl = document.getElementById('prov_baseUrl')?.value?.trim() || '';
-  if (!baseUrl) { toast(t('required_field') + ': Base URL', 'error'); return; }
+
+  const source = document.getElementById('prov_source')?.value || 'models';
 
   const apiKeyEl = document.getElementById('prov_apiKey');
   let apiKey;
   if (apiKeyEl && apiKeyEl.dataset.originalSecret) {
-    apiKey = { source: 'env', id: '__OPENCLAW_REDACTED__' }; // 保留原值
+    apiKey = { source: 'env', id: '__OPENCLAW_REDACTED__' };
   } else if (apiKeyEl && apiKeyEl.value) {
     apiKey = apiKeyEl.value;
   }
 
-  let models = [];
-  const modelsEl = document.getElementById('prov_models');
-  if (modelsEl && modelsEl.value.trim()) {
-    try { models = JSON.parse(modelsEl.value); }
-    catch { toast('模型列表 JSON 格式错误', 'error'); return; }
-  }
+  let config;
+  if (source === 'auth') {
+    // auth.profiles 供应商
+    config = {
+      provider: id,
+      mode: document.getElementById('prov_mode')?.value || 'oauth',
+    };
+    const baseUrl = document.getElementById('prov_baseUrl')?.value?.trim();
+    if (baseUrl) config.baseUrl = baseUrl;
+    if (apiKey !== undefined) config.apiKey = apiKey;
+  } else {
+    // models.providers 供应商
+    const baseUrl = document.getElementById('prov_baseUrl')?.value?.trim() || '';
+    if (!baseUrl) { toast(t('required_field') + ': Base URL', 'error'); return; }
 
-  const config = { baseUrl, auth: document.getElementById('prov_auth')?.value || 'api-key', models };
-  if (apiKey !== undefined) config.apiKey = apiKey;
+    let models = [];
+    const modelsEl = document.getElementById('prov_models');
+    if (modelsEl && modelsEl.value.trim()) {
+      try { models = JSON.parse(modelsEl.value); }
+      catch { toast('模型列表 JSON 格式错误', 'error'); return; }
+    }
+
+    config = { baseUrl, auth: document.getElementById('prov_auth')?.value || 'api-key', models };
+    if (apiKey !== undefined) config.apiKey = apiKey;
+  }
 
   try {
     if (existingId) {
