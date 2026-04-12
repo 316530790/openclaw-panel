@@ -256,9 +256,9 @@ function formatBytes(b) {
 function formatUptime(s) {
   if (s == null) return '--';
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}时`;
-  if (h > 0) return `${h}时 ${m}分`;
-  return `${m}分`;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 function isRedacted(val) {

@@ -314,7 +314,7 @@ function updateOverviewStats(data) {
   const ocUp = data.openclawUptime;
   updateCard('uptime',
     ocUp != null ? formatUptime(ocUp) : 'OpenClaw 未运行',
-    ocUp != null ? 'OpenClaw 进程运行时长' : '未检测到 OpenClaw',
+    ocUp != null ? '持续运行中' : '未检测到 OpenClaw',
     null,
     ocUp == null);
 
