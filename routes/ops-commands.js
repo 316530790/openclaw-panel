@@ -26,16 +26,27 @@ function findGatewayPidsWin(callback) {
   });
 }
 
-// ─── macOS：用 pgrep -f 查进程，严格→宽松两级降级 ───────────────
+// ─── macOS：优先查占用 gateway 端口的进程，最准确 ──────────────
 function findGatewayPidsMac(callback) {
   const selfPid = process.pid;
   const parse = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s) && parseInt(s) !== selfPid);
-  exec(`pgrep -f "openclaw.*gateway"`, { timeout: 3000 }, (err, stdout) => {
-    const pids = (!err && stdout) ? parse(stdout) : [];
-    if (pids.length > 0) return callback(pids);
-    // 降级：匹配所有 openclaw 进程，排除 panel 自身
-    exec(`pgrep -f openclaw`, { timeout: 3000 }, (err2, stdout2) => {
-      callback((!err2 && stdout2) ? parse(stdout2) : []);
+
+  // 从配置读 gateway 端口，默认 18789
+  let gwPort = 18789;
+  try { const cfg = readConfig(); gwPort = (cfg && cfg.gateway && cfg.gateway.port) || 18789; } catch {}
+
+  // 第一优先：lsof 查端口占用 —— 谁在监听端口谁就是 gateway，不靠进程名猜
+  exec(`lsof -ti :${gwPort}`, { timeout: 3000 }, (err, stdout) => {
+    const portPids = (!err && stdout) ? parse(stdout) : [];
+    if (portPids.length > 0) return callback(portPids);
+
+    // 第二：pgrep 按进程名，严格→宽松降级
+    exec(`pgrep -f "openclaw.*gateway"`, { timeout: 3000 }, (err2, stdout2) => {
+      const pids2 = (!err2 && stdout2) ? parse(stdout2) : [];
+      if (pids2.length > 0) return callback(pids2);
+      exec(`pgrep -f openclaw`, { timeout: 3000 }, (err3, stdout3) => {
+        callback((!err3 && stdout3) ? parse(stdout3) : []);
+      });
     });
   });
 }
