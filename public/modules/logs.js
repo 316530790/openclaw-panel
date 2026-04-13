@@ -139,7 +139,14 @@ function startLogStream(agentId) {
   logEventSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      if (data.type === 'connected') {
+        // 连接建立确认，更新状态但不输出日志行
+        if (statusEl) { statusEl.textContent = '已连接'; statusEl.style.color = 'var(--green)'; }
+        return;
+      }
       if (data.type === 'error') { appendLog(el, '[ERR] ' + (data.message || ''), 'role-error'); return; }
+      if (data.type === 'warn') { appendLog(el, '[WARN] ' + (data.message || ''), 'role-tool'); return; }
+      if (data.type === 'info') { appendLog(el, '[INFO] ' + (data.message || ''), 'role-tool'); return; }
       if (data.type === 'line' && data.data) {
         const entry = data.data;
         const role = entry.role || entry.type || '';
