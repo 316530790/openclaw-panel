@@ -1,10 +1,25 @@
 'use strict';
 
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { exec } = require('child_process');
 const { readConfig } = require('../lib/config');
 const { readBody, sendJson, sendError } = require('../lib/http-utils');
 const { getOcCmd } = require('../lib/openclaw-bin');
+
+// ─── macOS launchd 服务检测 ──────────────────
+// Gateway 在 Mac 上通常被注册为 launchd 服务（KeepAlive=true），kill 进程会被立刻重拉
+// 必须用 launchctl 来停止/启动，而不是直接 kill
+function findLaunchdPlist() {
+  if (os.platform() !== 'darwin') return null;
+  const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+  try {
+    const files = fs.readdirSync(launchAgentsDir);
+    const f = files.find(name => /openclaw.*gateway/i.test(name) && name.endsWith('.plist'));
+    return f ? path.join(launchAgentsDir, f) : null;
+  } catch { return null; }
+}
 
 function ts() {
   return new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -35,8 +50,8 @@ function findGatewayPidsMac(callback) {
   let gwPort = 18789;
   try { const cfg = readConfig(); gwPort = (cfg && cfg.gateway && cfg.gateway.port) || 18789; } catch {}
 
-  // 第一优先：lsof 查端口占用 —— 谁在监听端口谁就是 gateway，不靠进程名猜
-  exec(`lsof -ti :${gwPort}`, { timeout: 3000 }, (err, stdout) => {
+  // 第一优先：lsof 只查 LISTEN 状态 —— 精确匹配正在监听端口的进程，排除面板健康检测等 ESTABLISHED 连接
+  exec(`lsof -ti TCP:${gwPort} -s TCP:LISTEN`, { timeout: 3000 }, (err, stdout) => {
     const portPids = (!err && stdout) ? parse(stdout) : [];
     if (portPids.length > 0) return callback(portPids);
 
@@ -80,32 +95,53 @@ function killPidsWin(pids, lines) {
   });
 }
 
-// ─── macOS：先 SIGTERM，1s 后若仍存活则 SIGKILL ─────────────────
+// ─── macOS：先 SIGTERM，1s 后若仍存活则 SIGKILL（同时 kill 进程组，确保子进程一并清理）─
 function killPidsMac(pids, lines, done) {
-  const { execSync } = require('child_process');
-  // 先全部发 SIGTERM
-  pids.forEach(pid => {
-    try { process.kill(parseInt(pid), 'SIGTERM'); } catch {}
-  });
-  // 等 1s，检查哪些还活着，对它们补发 SIGKILL
-  setTimeout(() => {
-    pids.forEach(pid => {
-      const pidInt = parseInt(pid);
-      let alive = false;
-      try { process.kill(pidInt, 0); alive = true; } catch {}  // signal 0 仅探活不发信号
-      if (alive) {
-        try {
-          process.kill(pidInt, 'SIGKILL');
-          lines.push(`[${ts()}] 强制终止进程 PID ${pid} (SIGKILL)`);
-        } catch (e) {
-          lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e.message}`);
+  if (pids.length === 0) return done();
+
+  // 获取每个 PID 的进程组 ID（PGID），以便整组 kill
+  let pending = pids.length;
+  const pgids = new Set();
+
+  function afterGetPgids() {
+    // SIGTERM：先发给单个进程，再发给整个进程组
+    pids.forEach(pid => { try { process.kill(parseInt(pid), 'SIGTERM'); } catch {} });
+    pgids.forEach(pgid => { try { process.kill(-pgid, 'SIGTERM'); } catch {} });
+
+    // 1s 后检查存活，补发 SIGKILL
+    setTimeout(() => {
+      // 整组 SIGKILL（杀掉 shell 层、worker 子进程等）
+      pgids.forEach(pgid => { try { process.kill(-pgid, 'SIGKILL'); } catch {} });
+
+      pids.forEach(pid => {
+        const pidInt = parseInt(pid);
+        let alive = false;
+        try { process.kill(pidInt, 0); alive = true; } catch {}  // signal 0 仅探活
+        if (alive) {
+          try {
+            process.kill(pidInt, 'SIGKILL');
+            lines.push(`[${ts()}] 强制终止进程 PID ${pid} (SIGKILL)`);
+          } catch (e) {
+            lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e.message}`);
+          }
+        } else {
+          lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
         }
-      } else {
-        lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
+      });
+      done();
+    }, 1000);
+  }
+
+  pids.forEach(pid => {
+    exec(`ps -o pgid= -p ${parseInt(pid)}`, { timeout: 2000 }, (err, stdout) => {
+      if (!err && stdout) {
+        const pgid = parseInt(stdout.trim());
+        // 不能 kill panel 自身所在的进程组
+        if (pgid > 1 && pgid !== process.pid && pgid !== process.ppid) pgids.add(pgid);
       }
+      if (--pending === 0) afterGetPgids();
     });
-    done();
-  }, 1000);
+  });
 }
 
 function killPids(pids, lines, done) {
@@ -115,6 +151,78 @@ function killPids(pids, lines, done) {
   } else {
     killPidsMac(pids, lines, done);
   }
+}
+
+// ─── macOS launchd 操作 ──────────────────────
+// 通过 plutil 修改 plist 的 KeepAlive，再配合 launchctl 操作
+// 停止：先禁用 KeepAlive → unload（服务停止，但 plist 仍在，下次登录 launchd 会重载）
+// 启动：先恢复 KeepAlive → load（重新托管给 launchd，崩溃自动重拉）
+
+function launchdSetKeepAlive(plist, enabled, cb) {
+  const val = enabled ? 'YES' : 'NO';
+  exec(`plutil -replace KeepAlive -bool ${val} "${plist}"`, { timeout: 3000 }, (err) => {
+    if (err) console.warn('[launchd] plutil 失败:', err.message);
+    cb();
+  });
+}
+
+function launchdStop(plist, label, lines, respond) {
+  lines.push(`[${ts()}] 检测到 launchd 服务: ${label}`);
+  lines.push(`[${ts()}] 关闭 KeepAlive，防止进程被 launchd 自动重拉...`);
+  launchdSetKeepAlive(plist, false, () => {
+    exec(`launchctl unload "${plist}"`, { timeout: 8000 }, (err, _out, stderr) => {
+      const errMsg = (err && err.message) || stderr || '';
+      if (err && !/No such process|Could not find/i.test(errMsg)) {
+        lines.push(`[${ts()}] launchctl unload 失败: ${errMsg}`);
+        return respond({ success: false, error: errMsg, output: lines.join('\n') });
+      }
+      lines.push(`[${ts()}] Gateway 已停止`);
+      respond({ success: true, message: 'Gateway 已停止', output: lines.join('\n') });
+    });
+  });
+}
+
+function launchdStart(plist, label, lines, cb) {
+  lines.push(`[${ts()}] 检测到 launchd 服务: ${label}`);
+  lines.push(`[${ts()}] 恢复 KeepAlive...`);
+  launchdSetKeepAlive(plist, true, () => {
+    // 检查服务是否已在 launchd 列表里
+    exec(`launchctl list "${label}"`, { timeout: 3000 }, (listErr) => {
+      if (!listErr) {
+        // 已注册但未运行（KeepAlive 刚关掉的状态）→ start
+        exec(`launchctl start "${label}"`, { timeout: 5000 }, (err) => {
+          lines.push(err ? `[${ts()}] launchctl start 失败: ${err.message}` : `[${ts()}] Gateway 已启动`);
+          cb(!err, err && err.message);
+        });
+      } else {
+        // 未注册（曾被 unload）→ load
+        exec(`launchctl load "${plist}"`, { timeout: 8000 }, (err) => {
+          lines.push(err ? `[${ts()}] launchctl load 失败: ${err.message}` : `[${ts()}] Gateway 已启动`);
+          cb(!err, err && err.message);
+        });
+      }
+    });
+  });
+}
+
+function launchdRestart(plist, label, lines, respond) {
+  lines.push(`[${ts()}] 检测到 launchd 服务: ${label}`);
+  // 确保 KeepAlive=true，再 unload + load，最可靠
+  launchdSetKeepAlive(plist, true, () => {
+    exec(`launchctl unload "${plist}"`, { timeout: 8000 }, (err) => {
+      if (err) lines.push(`[${ts()}] unload 警告: ${err.message}`);
+      setTimeout(() => {
+        exec(`launchctl load "${plist}"`, { timeout: 8000 }, (err2) => {
+          if (err2) {
+            lines.push(`[${ts()}] launchctl load 失败: ${err2.message}`);
+            return respond({ success: false, error: err2.message, output: lines.join('\n') });
+          }
+          lines.push(`[${ts()}] Gateway 重启完成`);
+          respond({ success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
+        });
+      }, 800);
+    });
+  });
 }
 
 // ─── 运维命令 Handler ────────────────────────
@@ -138,8 +246,15 @@ function makeResponder(res, lines, timeoutMs = 20000) {
 
 function handleCmdRestart(req, res) {
   const lines = [];
-  lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
+  lines.push(`[${ts()}] 正在重启 Gateway...`);
   const respond = makeResponder(res, lines);
+
+  if (os.platform() === 'darwin') {
+    const plist = findLaunchdPlist();
+    if (plist) return launchdRestart(plist, path.basename(plist, '.plist'), lines, respond);
+  }
+
+  // 非 launchd：kill + 重新启动
   findGatewayPids(pids => {
     if (pids.length > 0) {
       lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
@@ -162,18 +277,22 @@ function handleCmdRestart(req, res) {
         }
       }, 2000);
     };
-    if (pids.length > 0) {
-      killPids(pids, lines, doStart);
-    } else {
-      doStart();
-    }
+    if (pids.length > 0) killPids(pids, lines, doStart);
+    else doStart();
   });
 }
 
 function handleCmdStop(req, res) {
   const lines = [];
-  lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
+  lines.push(`[${ts()}] 正在停止 Gateway...`);
   const respond = makeResponder(res, lines);
+
+  if (os.platform() === 'darwin') {
+    const plist = findLaunchdPlist();
+    if (plist) return launchdStop(plist, path.basename(plist, '.plist'), lines, respond);
+  }
+
+  // 非 launchd：直接 kill 进程
   findGatewayPids(pids => {
     if (pids.length === 0) {
       lines.push(`[${ts()}] 未找到运行中的 Gateway 进程`);
@@ -190,6 +309,17 @@ function handleCmdStop(req, res) {
 function handleCmdStart(req, res) {
   const lines = [];
   lines.push(`[${ts()}] 正在启动 Gateway...`);
+
+  if (os.platform() === 'darwin') {
+    const plist = findLaunchdPlist();
+    if (plist) {
+      return launchdStart(plist, path.basename(plist, '.plist'), lines, (ok, errMsg) => {
+        sendJson(res, { success: ok, message: ok ? 'Gateway 启动命令已发送' : '启动失败', error: errMsg, output: lines.join('\n') });
+      });
+    }
+  }
+
+  // 非 launchd：直接 exec 启动
   try {
     const { cmd, shell } = getOcCmd('gateway run');
     lines.push(`[${ts()}] 执行: openclaw gateway run`);
