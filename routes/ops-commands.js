@@ -15,12 +15,18 @@ function ts() {
 function findGatewayPids(callback) {
   const platform = os.platform();
   if (platform === 'win32') {
-    // 使用 PowerShell CimInstance（兼容 Windows 10/11，替代废弃的 wmic）
-    const psCmd = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*gateway*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
-    exec(psCmd, { shell: 'powershell', windowsHide: true, timeout: 8000 }, (err, stdout) => {
-      if (err || !stdout) return callback([]);
-      const pids = stdout.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s));
-      callback(pids);
+    // 先用严格条件（含 gateway）查，找不到再用宽松条件（仅排除 panel 自身）
+    // 避免 openclaw 内部二次 spawn 时 CommandLine 里没有 "gateway" 关键字导致找不到进程
+    const strict = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*gateway*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
+    const loose  = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
+    const parse  = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s));
+    exec(strict, { shell: 'powershell', windowsHide: true, timeout: 8000 }, (err, stdout) => {
+      const pids = (!err && stdout) ? parse(stdout) : [];
+      if (pids.length > 0) return callback(pids);
+      // 严格条件没找到，降级用宽松条件
+      exec(loose, { shell: 'powershell', windowsHide: true, timeout: 8000 }, (err2, stdout2) => {
+        callback((!err2 && stdout2) ? parse(stdout2) : []);
+      });
     });
   } else {
     exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', { timeout: 5000 }, (err, stdout) => {
@@ -31,15 +37,24 @@ function findGatewayPids(callback) {
 }
 
 function killPids(pids, lines) {
+  const { execSync } = require('child_process');
   pids.forEach(pid => {
+    const pidInt = parseInt(pid);
     try {
-      process.kill(parseInt(pid));
+      process.kill(pidInt);
       lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
     } catch (e) {
       if (os.platform() === 'win32') {
-        try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch {}
+        // 用 execSync 确保 taskkill 完成后再继续，避免重启时进程还未退出
+        try {
+          execSync(`taskkill /F /PID ${pidInt}`, { windowsHide: true, timeout: 3000 });
+          lines.push(`[${ts()}] 强制终止进程 PID ${pid}`);
+        } catch (e2) {
+          lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e2.message}`);
+        }
+      } else {
+        lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e.message}`);
       }
-      lines.push(`[${ts()}] 强制终止进程 PID ${pid}`);
     }
   });
 }
@@ -126,16 +141,26 @@ function cleanVersion(raw) {
 function handleCmdUpgrade(req, res) {
   const isWin = os.platform() === 'win32';
   const shell = isWin ? 'powershell' : true;
-  exec('npm view openclaw version', { timeout: 15000, shell }, (err, stdout) => {
-    if (err) return sendJson(res, { success: false, error: err.message });
-    const latestVer = (stdout || '').trim();
-    const verCmd = isWin ? 'openclaw.cmd --version' : 'openclaw --version';
-    exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
-      const currentVer = cleanVersion(stdout2);
-      const needsUpdate = latestVer && currentVer && latestVer !== currentVer;
+  const verCmd = isWin ? 'openclaw.cmd --version' : 'openclaw --version';
+
+  // 先取本地版本
+  exec(verCmd, { timeout: 10000, shell }, (err2, stdout2) => {
+    const currentVer = cleanVersion(stdout2);
+
+    // 再查 npm registry 最新版（若包未发布到 npm 则跳过，仅返回本地版本）
+    exec('npm view openclaw version', { timeout: 15000, shell }, (err, stdout) => {
+      if (err) {
+        // npm 查询失败（未发布或无网络）：只返回本地版本，不报错
+        return sendJson(res, {
+          success: true, latest: null, current: currentVer, needsUpdate: false,
+          stdout: `当前版本: ${currentVer || '未知'}\n最新版本: 无法从 npm 获取（${err.message.split('\n')[0]}）`,
+        });
+      }
+      const latestVer = (stdout || '').trim();
+      const needsUpdate = !!(latestVer && currentVer && latestVer !== currentVer);
       sendJson(res, {
         success: true, latest: latestVer, current: currentVer, needsUpdate,
-        stdout: `Current: ${currentVer || 'unknown'}\nLatest: ${latestVer || 'unknown'}\n${needsUpdate ? 'Update available: npm update -g openclaw' : 'Already up to date'}`,
+        stdout: `当前版本: ${currentVer || '未知'}\n最新版本: ${latestVer || '未知'}\n${needsUpdate ? '⬆ 发现新版本' : '✓ 已是最新版本'}`,
       });
     });
   });
