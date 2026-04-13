@@ -20,11 +20,11 @@ function findGatewayPids(callback) {
     const strict = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*gateway*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
     const loose  = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
     const parse  = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s));
-    exec(strict, { shell: 'powershell', windowsHide: true, timeout: 8000 }, (err, stdout) => {
+    exec(strict, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err, stdout) => {
       const pids = (!err && stdout) ? parse(stdout) : [];
       if (pids.length > 0) return callback(pids);
       // 严格条件没找到，降级用宽松条件
-      exec(loose, { shell: 'powershell', windowsHide: true, timeout: 8000 }, (err2, stdout2) => {
+      exec(loose, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err2, stdout2) => {
         callback((!err2 && stdout2) ? parse(stdout2) : []);
       });
     });
@@ -61,9 +61,27 @@ function killPids(pids, lines) {
 
 // ─── 运维命令 Handler ────────────────────────
 
+// 防止重复响应的工具函数
+function makeResponder(res, lines, timeoutMs = 20000) {
+  let done = false;
+  const timer = setTimeout(() => {
+    if (done) return;
+    done = true;
+    lines.push(`[${ts()}] 操作超时，请检查 Gateway 状态`);
+    sendJson(res, { success: false, error: '操作超时', output: lines.join('\n') });
+  }, timeoutMs);
+  return function respond(data) {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    sendJson(res, data);
+  };
+}
+
 function handleCmdRestart(req, res) {
   const lines = [];
   lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
+  const respond = makeResponder(res, lines);
   findGatewayPids(pids => {
     if (pids.length > 0) {
       lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
@@ -72,7 +90,6 @@ function handleCmdRestart(req, res) {
       lines.push(`[${ts()}] 未找到运行中的进程，直接启动`);
     }
     lines.push(`[${ts()}] 等待进程退出...`);
-    // 等待 2s 确保进程完全退出（原 500ms 在高负载机器上不够）
     setTimeout(() => {
       try {
         const { cmd, shell } = getOcCmd('gateway run');
@@ -80,10 +97,10 @@ function handleCmdRestart(req, res) {
         const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
         try { oc.unref(); } catch {}
         lines.push(`[${ts()}] Gateway 已启动 (PID: ${oc.pid || '未知'})`);
-        sendJson(res, { success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
+        respond({ success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
       } catch (e) {
         lines.push(`[${ts()}] 启动失败: ${e.message}`);
-        sendJson(res, { success: false, error: e.message, output: lines.join('\n') });
+        respond({ success: false, error: e.message, output: lines.join('\n') });
       }
     }, 2000);
   });
@@ -92,15 +109,16 @@ function handleCmdRestart(req, res) {
 function handleCmdStop(req, res) {
   const lines = [];
   lines.push(`[${ts()}] 正在查找 Gateway 进程...`);
+  const respond = makeResponder(res, lines);
   findGatewayPids(pids => {
     if (pids.length === 0) {
       lines.push(`[${ts()}] 未找到运行中的 Gateway 进程`);
-      return sendJson(res, { success: true, message: '未找到 Gateway 进程', output: lines.join('\n') });
+      return respond({ success: true, message: '未找到 Gateway 进程', output: lines.join('\n') });
     }
     lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
     killPids(pids, lines);
     lines.push(`[${ts()}] Gateway 已停止`);
-    sendJson(res, { success: true, message: 'Gateway 已停止', output: lines.join('\n') });
+    respond({ success: true, message: 'Gateway 已停止', output: lines.join('\n') });
   });
 }
 

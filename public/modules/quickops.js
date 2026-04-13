@@ -276,7 +276,13 @@ function quickUpdate() {
   api('POST', '/api/cmd/upgrade').then(data => {
     if (data.success) {
       _setPreUpgradeVersion(data.current || null);
-      let content = `当前版本: ${data.current || '未知'}\n最新版本: ${data.latest || '未知'}\n`;
+      // latest 为 null 表示 npm 查询失败，直接显示后端返回的说明文字，不误显示"已是最新版本"
+      if (data.latest == null) {
+        showOpsOutput('cron', '版本检查', data.stdout || `当前版本: ${data.current || '未知'}\n（无法获取最新版本信息）`);
+        toast('无法获取最新版本，请检查网络', 'warn');
+        return;
+      }
+      let content = `当前版本: ${data.current || '未知'}\n最新版本: ${data.latest}\n`;
       if (data.needsUpdate) {
         content += '\n⬆ 发现新版本！';
         toast('发现新版本可升级', 'warn');
@@ -284,7 +290,7 @@ function quickUpdate() {
         content += '\n✓ 已是最新版本';
         toast('已是最新版本', 'success');
       }
-      showOpsOutput('overview', '版本检查', content);
+      showOpsOutput('cron', '版本检查', content);
       // 显示操作按钮
       const savedPrev = _getPreUpgradeVersion();
       if (data.needsUpdate) {
@@ -296,7 +302,7 @@ function quickUpdate() {
           `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${savedPrev}')">回退到 ${savedPrev}</button>`);
       }
     } else {
-      showOpsOutput('overview', '版本检查', '检查失败: ' + (data.error || ''));
+      showOpsOutput('cron', '版本检查', '检查失败: ' + (data.error || ''));
       toast('版本检查失败', 'error');
     }
   }).catch(e => {
