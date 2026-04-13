@@ -94,17 +94,16 @@ function renderAgentCards(list, defaults) {
     </div>`;
   }
 
-  return `<div class="agent-grid">${list.map(a => {
+  // Inject agent card styles once via ensureStyle (dedup)
+  ensureStyle('agent-card-css', `.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;padding:20px}.agent-card{border:1px solid var(--border);border-radius:12px;padding:20px;cursor:pointer;transition:all .2s ease;position:relative}.agent-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.08);border-color:var(--border-brand)}.agent-card-header{display:flex;align-items:center;gap:14px;margin-bottom:16px}.agent-avatar{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px;position:relative;flex-shrink:0}.agent-avatar-emoji{line-height:1}.agent-status-dot{position:absolute;bottom:-2px;right:-2px;font-size:10px;line-height:1}.agent-card-meta{min-width:0}.agent-card-name{font-weight:600;font-size:15px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.agent-card-id{font-size:12px;color:var(--text-muted);margin-top:2px}.agent-card-body{display:flex;flex-direction:column;gap:8px}.agent-card-row{display:flex;align-items:center;justify-content:space-between;gap:8px}.agent-card-label{font-size:12px;color:var(--text-muted);flex-shrink:0}.agent-card-footer{margin-top:16px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}.agent-status-badge{font-size:12px;font-weight:500;padding:3px 10px;border-radius:20px}.agent-status--working{background:var(--green);color:#fff}.agent-status--idle{background:var(--bg-secondary);color:var(--text-muted)}`);
+
+  const html = `<div class="agent-grid">${list.map(a => {
     const avatar = getAgentAvatar(a.id);
     const statusClass = a._status === 'working' ? 'agent-status--working' : 'agent-status--idle';
     const statusText = a._status === 'working' ? '运行中' : '空闲';
     const statusDot = a._status === 'working' ? '🟢' : '⚪';
 
-    // 模型信息
-    const model = a.model
-      ? (typeof a.model === 'object' ? a.model.primary : a.model)
-      : (defaults.model ? (typeof defaults.model === 'object' ? defaults.model.primary : defaults.model) : null);
-    const modelShort = model ? model.split('/').pop() : null;
+    const modelShort = resolveModelShort(a, defaults);
 
     // 最后活跃时间
     const lastActivity = a._lastActivity ? timeAgo(a._lastActivity) : null;
@@ -138,106 +137,9 @@ function renderAgentCards(list, defaults) {
         ${a._source === 'disk' ? '<span class="badge" style="font-size:10px">本地</span>' : ''}
       </div>
     </div>`;
-  }).join('')}</div>
+  }).join('')}</div>`;
 
-  <style>
-    .agent-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px;
-      padding: 20px;
-    }
-    .agent-card {
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      position: relative;
-    }
-    .agent-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
-      border-color: var(--border-brand);
-    }
-    .agent-card-header {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      margin-bottom: 16px;
-    }
-    .agent-avatar {
-      width: 48px;
-      height: 48px;
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 24px;
-      position: relative;
-      flex-shrink: 0;
-    }
-    .agent-avatar-emoji { line-height: 1; }
-    .agent-status-dot {
-      position: absolute;
-      bottom: -2px;
-      right: -2px;
-      font-size: 10px;
-      line-height: 1;
-    }
-    .agent-card-meta { min-width: 0; }
-    .agent-card-name {
-      font-weight: 600;
-      font-size: 15px;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .agent-card-id {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-    .agent-card-body {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .agent-card-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .agent-card-label {
-      font-size: 12px;
-      color: var(--text-muted);
-      flex-shrink: 0;
-    }
-    .agent-card-footer {
-      margin-top: 16px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .agent-status-badge {
-      font-size: 12px;
-      font-weight: 500;
-      padding: 3px 10px;
-      border-radius: 20px;
-    }
-    .agent-status--working {
-      background: var(--green);
-      color: #fff;
-    }
-    .agent-status--idle {
-      background: var(--bg-secondary);
-      color: var(--text-muted);
-    }
-  </style>`;
+  return html;
 }
 
 function timeAgo(isoStr) {
@@ -259,9 +161,7 @@ function showAgentDetail(id) {
   const agent = data.list.find(a => a.id === id);
   if (!agent) return;
   const avatar = getAgentAvatar(agent.id);
-  const model = agent.model
-    ? (typeof agent.model === 'object' ? agent.model.primary : agent.model)
-    : (data.defaults.model ? (typeof data.defaults.model === 'object' ? data.defaults.model.primary : data.defaults.model) : '--');
+  const model = resolveModelName(agent, data.defaults) || '--';
   const providers = agent._providers && agent._providers.length ? agent._providers.join(', ') : '--';
 
   openModal(`
@@ -499,6 +399,7 @@ function renderAgentSessions(sessions) {
     </div>`;
     return;
   }
+  ensureStyle('agent-card-styles', `.data-table { width: 100%; border-collapse: collapse; } .data-table th, .data-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }`);
   el.innerHTML = `<table class="data-table">
     <thead><tr><th>Agent</th><th>Session ID</th><th>状态</th><th>最近活动</th><th>大小</th></tr></thead>
     <tbody>${sessions.slice(0, 20).map(s => `
@@ -653,7 +554,7 @@ function renderSessionViewerContent(data) {
       <span>📥 输入: ${formatTokens(u.inputTokens)}</span>
       <span>📤 输出: ${formatTokens(u.outputTokens)}</span>
       <span>📊 合计: ${formatTokens(u.totalTokens)}</span>
-      <span>💰 估算: $${estimateCost(u.inputTokens, u.outputTokens, data.model)}</span>
+      <span>💰 估算: $${estimateCostUnified(u.inputTokens, u.outputTokens, data.model)}</span>
     `;
   }
 }
@@ -728,17 +629,4 @@ function formatTokens(n) {
   return n.toString();
 }
 
-function estimateCost(inTokens, outTokens, model) {
-  // 大致估算（基于常见模型定价）
-  const m = (model || '').toLowerCase();
-  let inPrice = 3, outPrice = 15; // 默认 GPT-4 级别 per 1M tokens
-  if (m.includes('gpt-3.5') || m.includes('mini')) { inPrice = 0.15; outPrice = 0.6; }
-  else if (m.includes('gpt-4o') || m.includes('4o')) { inPrice = 2.5; outPrice = 10; }
-  else if (m.includes('claude') && m.includes('haiku')) { inPrice = 0.25; outPrice = 1.25; }
-  else if (m.includes('claude') && m.includes('sonnet')) { inPrice = 3; outPrice = 15; }
-  else if (m.includes('claude') && m.includes('opus')) { inPrice = 15; outPrice = 75; }
-  else if (m.includes('deepseek')) { inPrice = 0.27; outPrice = 1.1; }
-  const cost = (inTokens / 1000000) * inPrice + (outTokens / 1000000) * outPrice;
-  return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2);
-}
-
+// estimateCost is now provided by estimateCostUnified in app.js

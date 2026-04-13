@@ -1302,3 +1302,52 @@ body.dark .nav-item.active { background: rgba(255,255,255,0.08); }
   .topbar { padding: 12px 14px; }
   .content-area { padding: 14px; }
 }
+
+/* ─── Skeleton Loader ────────────────────────── */
+.skeleton-loader {
+  padding: 4px 0;
+  animation: fadeIn 0.2s ease;
+}
+
+.skeleton-block {
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--border) 50%, var(--bg-subtle) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ─── Dark Mode — Quick Entry Icon Fix ───────── */
+:root {
+  --quick-icon-ops: #fff0e6;
+  --quick-icon-key: #e8f5e9;
+  --quick-icon-log: #e3f2fd;
+  --quick-icon-tool: #fff3e0;
+  --quick-icon-settings: #f3e5f5;
+  --quick-icon-mcp: #e0f2f1;
+}
+
+body.dark {
+  --quick-icon-ops: rgba(255,153,0,0.15);
+  --quick-icon-key: rgba(30,138,76,0.15);
+  --quick-icon-log: rgba(59,130,246,0.15);
+  --quick-icon-tool: rgba(255,152,0,0.15);
+  --quick-icon-settings: rgba(156,39,176,0.15);
+  --quick-icon-mcp: rgba(0,150,136,0.15);
+}
+
+/* ─── Dark Mode — Session Viewer Fixes ───────── */
+body.dark .sv-msg--tool {
+  background: rgba(59,130,246,0.1);
+  color: var(--text-secondary);
+  border-color: rgba(59,130,246,0.2);
+}
+
+body.dark .sv-tool-tag {
+  background: rgba(59,130,246,0.15);
+  color: #93b5ff;
+}

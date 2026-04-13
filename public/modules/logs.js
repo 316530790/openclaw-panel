@@ -114,6 +114,11 @@ function exportLogs() {
   toast('日志已导出', 'success');
 }
 
+let logReconnectDelay = 3000;
+let logReconnectCount = 0;
+const LOG_MAX_RECONNECT = 10;
+const LOG_MAX_DELAY = 60000;
+
 function startLogStream(agentId) {
   if (logEventSource) { logEventSource.close(); }
   const el = document.getElementById('logStream');
@@ -126,6 +131,9 @@ function startLogStream(agentId) {
 
   logEventSource.onopen = () => {
     if (statusEl) { statusEl.textContent = '已连接'; statusEl.style.color = 'var(--green)'; }
+    // 连接成功后重置退避参数
+    logReconnectDelay = 3000;
+    logReconnectCount = 0;
   };
 
   logEventSource.onmessage = (e) => {
@@ -159,9 +167,19 @@ function startLogStream(agentId) {
   };
 
   logEventSource.onerror = () => {
-    if (statusEl) { statusEl.textContent = '已断开，3秒后重连...'; statusEl.style.color = 'var(--red)'; }
-    if (el) appendLog(el, '[断开] 日志流连接断开，3秒后重连...', 'role-error');
-    setTimeout(() => { if (currentPage === 'logs') startLogStream(agentId); }, 3000);
+    logReconnectCount++;
+    if (logReconnectCount >= LOG_MAX_RECONNECT) {
+      if (statusEl) { statusEl.innerHTML = `<span style="color:var(--red)">已断开</span> <button class="btn btn-sm" onclick="logReconnectCount=0;logReconnectDelay=3000;startLogStream('${agentId}')">手动重连</button>`; }
+      if (el) appendLog(el, `[断开] 连续 ${LOG_MAX_RECONNECT} 次重连失败，已停止自动重连`, 'role-error');
+      if (logEventSource) { logEventSource.close(); logEventSource = null; }
+      return;
+    }
+    const delaySec = Math.round(logReconnectDelay / 1000);
+    if (statusEl) { statusEl.textContent = `已断开，${delaySec}秒后重连... (${logReconnectCount}/${LOG_MAX_RECONNECT})`; statusEl.style.color = 'var(--red)'; }
+    if (el) appendLog(el, `[断开] 日志流连接断开，${delaySec}秒后重连...`, 'role-error');
+    const nextDelay = logReconnectDelay;
+    logReconnectDelay = Math.min(logReconnectDelay * 2, LOG_MAX_DELAY);
+    setTimeout(() => { if (currentPage === 'logs') startLogStream(agentId); }, nextDelay);
   };
 }
 

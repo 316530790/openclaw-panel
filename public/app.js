@@ -117,6 +117,7 @@ let lang = localStorage.getItem('panel_lang') || 'zh';
 let theme = localStorage.getItem('panel_theme') || 'light';
 let currentPage = '';
 let cachedConfig = null;
+let cachedConfigAt = 0;
 let healthTimer = null;
 let logEventSource = null;
 
@@ -232,11 +233,14 @@ async function api(method, path, body) {
 }
 
 async function getConfig() {
-  if (!cachedConfig) cachedConfig = await api('GET', '/api/config');
+  // 缓存 10 秒，避免写操作后读到过期数据
+  if (cachedConfig && (Date.now() - cachedConfigAt) < 10000) return cachedConfig;
+  cachedConfig = await api('GET', '/api/config');
+  cachedConfigAt = Date.now();
   return cachedConfig || {};
 }
 
-function invalidateConfig() { cachedConfig = null; }
+function invalidateConfig() { cachedConfig = null; cachedConfigAt = 0; }
 
 // ─────────────────────────────────────────────
 // 工具函数
@@ -263,6 +267,69 @@ function formatUptime(s) {
 
 function isRedacted(val) {
   return typeof val === 'string' && val === '__OPENCLAW_REDACTED__';
+}
+
+// 去重 Style 注入：多次调用只注入一次
+function ensureStyle(id, css) {
+  if (document.getElementById(id)) return;
+  const el = document.createElement('style');
+  el.id = id;
+  el.textContent = css;
+  document.head.appendChild(el);
+}
+
+// 通用模型名称提取（消除各模块重复逻辑）
+function resolveModelName(agent, defaults) {
+  const m = agent.model
+    ? (typeof agent.model === 'object' ? agent.model.primary : agent.model)
+    : (defaults && defaults.model ? (typeof defaults.model === 'object' ? defaults.model.primary : defaults.model) : null);
+  return m || null;
+}
+
+function resolveModelShort(agent, defaults) {
+  const m = resolveModelName(agent, defaults);
+  return m ? m.split('/').pop() : null;
+}
+
+// 统一费用估算 — 优先从 PROVIDER_PRESETS 取价格
+function estimateCostUnified(inTokens, outTokens, model) {
+  const m = (model || '').toLowerCase();
+  let inPrice = 3, outPrice = 15; // 默认 GPT-4 级别 per 1M tokens
+  // 从 PROVIDER_PRESETS 查找精确价格
+  if (typeof PROVIDER_PRESETS !== 'undefined') {
+    for (const [, preset] of Object.entries(PROVIDER_PRESETS)) {
+      for (const pm of (preset.models || [])) {
+        if (m.includes(pm.id)) {
+          inPrice = pm.cost?.input ?? inPrice;
+          outPrice = pm.cost?.output ?? outPrice;
+          break;
+        }
+      }
+    }
+  }
+  // fallback 关键词匹配（价格单位：$/1M tokens，数据仅供参考）
+  if (m.includes('gpt-4o-mini') || m.includes('gpt-3.5')) { inPrice = 0.15; outPrice = 0.6; }
+  else if (m.includes('gpt-4o')) { inPrice = 2.5; outPrice = 10; }
+  else if (m.includes('gpt-4')) { inPrice = 30; outPrice = 60; }
+  else if (m.includes('claude-3-5') || m.includes('claude-3.5') || m.includes('claude-sonnet')) { inPrice = 3; outPrice = 15; }
+  else if (m.includes('claude-3-haiku') || m.includes('claude-haiku')) { inPrice = 0.25; outPrice = 1.25; }
+  else if (m.includes('claude')) { inPrice = 3; outPrice = 15; }
+  else if (m.includes('deepseek-r1')) { inPrice = 0.55; outPrice = 2.19; }
+  else if (m.includes('deepseek')) { inPrice = 0.27; outPrice = 1.1; }
+  else if (m.includes('gemini-1.5-pro')) { inPrice = 1.25; outPrice = 5; }
+  else if (m.includes('gemini') && m.includes('flash')) { inPrice = 0.075; outPrice = 0.3; }
+  const cost = (inTokens / 1000000) * inPrice + (outTokens / 1000000) * outPrice;
+  return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2);
+}
+
+// 全量费用估算（从 usage 数据中按模型维度聚合）
+function estimateAllCost(data) {
+  if (!data || !data.byModel) return '0.00';
+  let total = 0;
+  for (const m of data.byModel) {
+    total += parseFloat(estimateCostUnified(m.inputTokens, m.outputTokens, m.model));
+  }
+  return total < 0.01 ? total.toFixed(4) : total.toFixed(2);
 }
 
 // Secret 字段渲染：已设置的显示徽章，未设置的显示输入框
@@ -349,13 +416,24 @@ async function navigate(page) {
     el.classList.toggle('active', el.dataset.page === page);
   });
 
+  // 关闭移动端侧边栏
+  document.querySelector('.sidebar')?.classList.remove('mobile-open');
+  document.querySelector('.sidebar-overlay')?.classList.remove('active');
+
   // 更新页面标题
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = t(PAGE_TITLES[page] || page);
 
-  // 渲染内容
+  // 骨架屏 loading 状态
   const content = document.getElementById('content');
-  content.innerHTML = `<div class="empty-state"><div class="spinner"></div><div class="empty-title">${t('loading')}</div></div>`;
+  content.innerHTML = `<div class="skeleton-loader">
+    <div class="skeleton-block" style="height:80px;margin-bottom:16px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="skeleton-block" style="height:100px"></div>
+      <div class="skeleton-block" style="height:100px"></div>
+    </div>
+    <div class="skeleton-block" style="height:200px"></div>
+  </div>`;
 
   try {
     await PAGES[page](content);

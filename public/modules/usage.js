@@ -145,10 +145,4 @@ async function renderUsage(container) {
     </div>`;
 }
 
-function estimateAllCost(data) {
-  let total = 0;
-  for (const m of (data.byModel || [])) {
-    total += parseFloat(estimateCost(m.inputTokens, m.outputTokens, m.model));
-  }
-  return total < 0.01 ? total.toFixed(4) : total.toFixed(2);
-}
+// estimateAllCost is now provided by app.js (uses estimateCostUnified with PROVIDER_PRESETS pricing)

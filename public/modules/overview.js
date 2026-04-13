@@ -98,27 +98,27 @@ async function renderOverview(container) {
           <div class="card-body" style="padding:12px 16px">
             <div class="ov-quick-grid">
               <a class="ov-quick-item" href="#quickops" onclick="navigate('quickops');return false">
-                <div class="ov-quick-icon" style="background:#fff0e6">⚡</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-ops)">⚡</div>
                 <span>快捷操作</span>
               </a>
               <a class="ov-quick-item" href="#providers" onclick="navigate('providers');return false">
-                <div class="ov-quick-icon" style="background:#e8f5e9">🔑</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-key)">🔑</div>
                 <span>供应商</span>
               </a>
               <a class="ov-quick-item" href="#logs" onclick="navigate('logs');return false">
-                <div class="ov-quick-icon" style="background:#e3f2fd">📋</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-log)">📋</div>
                 <span>日志</span>
               </a>
               <a class="ov-quick-item" href="#tools" onclick="navigate('tools');return false">
-                <div class="ov-quick-icon" style="background:#fff3e0">🔧</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-tool)">🔧</div>
                 <span>工具</span>
               </a>
               <a class="ov-quick-item" href="#settings" onclick="navigate('settings');return false">
-                <div class="ov-quick-icon" style="background:#f3e5f5">⚙️</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-settings)">⚙️</div>
                 <span>设置</span>
               </a>
               <a class="ov-quick-item" href="#mcp" onclick="navigate('mcp');return false">
-                <div class="ov-quick-icon" style="background:#e0f2f1">🧩</div>
+                <div class="ov-quick-icon" style="background:var(--quick-icon-mcp)">🧩</div>
                 <span>MCP</span>
               </a>
             </div>
@@ -140,7 +140,10 @@ async function renderOverview(container) {
       </div>
     </div>
 
-    <style>
+    `;
+
+  // Use ensureStyle to inject overview-specific styles only once
+  ensureStyle('ov-styles', `
       .ov-row {
         display: grid;
         grid-template-columns: 1fr 340px;
@@ -291,7 +294,7 @@ async function renderOverview(container) {
         color: var(--text-muted);
         font-size: 13px;
       }
-    </style>`;
+  `);
 
   // 拉取数据
   const [health, agents, sessions, usage] = await Promise.allSettled([
@@ -350,7 +353,7 @@ function updateOverviewStats(data) {
     if (portEl) portEl.textContent = data.gateway.port || '--';
   }
   const platEl = document.getElementById('ovGwPlatform');
-  if (platEl) platEl.textContent = data.platform || os.platform?.() || '--';
+  if (platEl) platEl.textContent = data.platform || '--';
   const verEl = document.getElementById('ovGwVersion');
   if (verEl && data.openclawVersion) verEl.textContent = data.openclawVersion;
 
@@ -377,10 +380,7 @@ function renderOvAgents(agents) {
   body.innerHTML = `<div class="ov-agent-list">${list.map(a => {
     const avatar = typeof getAgentAvatar === 'function' ? getAgentAvatar(a.id) : { emoji: '🤖', accent: '#8aa7ff' };
     const isWorking = a._status === 'working';
-    const model = a.model
-      ? (typeof a.model === 'object' ? a.model.primary : a.model)
-      : (agents.defaults?.model ? (typeof agents.defaults.model === 'object' ? agents.defaults.model.primary : agents.defaults.model) : null);
-    const modelShort = model ? model.split('/').pop() : null;
+    const modelShort = resolveModelShort(a, agents.defaults);
     const lastAct = a._lastActivity && typeof timeAgo === 'function' ? timeAgo(a._lastActivity) : null;
 
     return `
