@@ -39,7 +39,7 @@ async function renderQuickOps(container) {
       <div class="card" style="cursor:pointer;transition:all 0.15s" onclick="quickStop()" onmouseenter="this.style.borderColor='rgba(220,53,69,0.28)';this.style.boxShadow='var(--shadow-md)'" onmouseleave="this.style.borderColor='';this.style.boxShadow=''">
         <div class="card-body" style="padding:20px">
           <div style="width:40px;height:40px;border-radius:var(--radius-md);background:var(--red-bg);display:flex;align-items:center;justify-content:center;margin-bottom:14px">
-            <svg width="20" height="20" style="color:var(--red)"><use href="#ico-warning"/></svg>
+            <svg width="20" height="20" style="color:var(--red)"><use href="#ico-x"/></svg>
           </div>
           <div style="font-size:14px;font-weight:600;margin-bottom:4px">停止 Gateway</div>
           <div style="font-size:12px;color:var(--text-muted);line-height:1.5">完全关闭网关进程</div>
@@ -69,7 +69,7 @@ async function renderQuickOps(container) {
       <div class="card" style="cursor:pointer;transition:all 0.15s" onclick="quickUpdate()" onmouseenter="this.style.borderColor='var(--border-strong)';this.style.boxShadow='var(--shadow-md)'" onmouseleave="this.style.borderColor='';this.style.boxShadow=''">
         <div class="card-body" style="padding:20px">
           <div style="width:40px;height:40px;border-radius:var(--radius-md);background:var(--bg-subtle);display:flex;align-items:center;justify-content:center;margin-bottom:14px">
-            <svg width="20" height="20" style="color:var(--text-secondary)"><use href="#ico-overview"/></svg>
+            <svg width="20" height="20" style="color:var(--text-secondary)"><use href="#ico-cron"/></svg>
           </div>
           <div style="font-size:14px;font-weight:600;margin-bottom:4px">检查更新</div>
           <div style="font-size:12px;color:var(--text-muted);line-height:1.5">获取 OpenClaw 最新版本</div>
@@ -139,7 +139,10 @@ function showOpsOutput(icon, title, content) {
   const iconEl = document.getElementById('opsOutputIcon');
   if (!card) return;
   if (titleEl) titleEl.textContent = title;
-  if (iconEl) iconEl.querySelector('use').setAttribute('href', `#ico-${icon}`);
+  if (iconEl) {
+    const useEl = iconEl.querySelector('use');
+    if (useEl) useEl.setAttribute('href', `#ico-${icon}`);
+  }
   card.style.display = 'block';
   if (out) out.textContent = content;
 }
@@ -169,6 +172,8 @@ async function refreshQuickOpsStatus() {
 function pollUntilGateway(expectAlive, interval = 1000, maxAttempts = 15) {
   let attempts = 0;
   const check = async () => {
+    // 已离开快捷操作页，停止轮询
+    if (location.hash !== '#quickops') return;
     const alive = await refreshQuickOpsStatus();
     if (alive === expectAlive) return; // 达到目标，停止
     attempts++;
