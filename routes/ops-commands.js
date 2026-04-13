@@ -12,51 +12,98 @@ function ts() {
 
 // ─── 进程管理 ────────────────────────────────
 
+// ─── Windows：用 PowerShell CimInstance 查进程 ──────────────────
+function findGatewayPidsWin(callback) {
+  const parse = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s));
+  const strict = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*gateway*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
+  const loose  = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
+  exec(strict, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err, stdout) => {
+    const pids = (!err && stdout) ? parse(stdout) : [];
+    if (pids.length > 0) return callback(pids);
+    exec(loose, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err2, stdout2) => {
+      callback((!err2 && stdout2) ? parse(stdout2) : []);
+    });
+  });
+}
+
+// ─── macOS：用 pgrep -f 查进程，严格→宽松两级降级 ───────────────
+function findGatewayPidsMac(callback) {
+  const selfPid = process.pid;
+  const parse = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s) && parseInt(s) !== selfPid);
+  exec(`pgrep -f "openclaw.*gateway"`, { timeout: 3000 }, (err, stdout) => {
+    const pids = (!err && stdout) ? parse(stdout) : [];
+    if (pids.length > 0) return callback(pids);
+    // 降级：匹配所有 openclaw 进程，排除 panel 自身
+    exec(`pgrep -f openclaw`, { timeout: 3000 }, (err2, stdout2) => {
+      callback((!err2 && stdout2) ? parse(stdout2) : []);
+    });
+  });
+}
+
 function findGatewayPids(callback) {
-  const platform = os.platform();
-  if (platform === 'win32') {
-    // 先用严格条件（含 gateway）查，找不到再用宽松条件（仅排除 panel 自身）
-    // 避免 openclaw 内部二次 spawn 时 CommandLine 里没有 "gateway" 关键字导致找不到进程
-    const strict = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*gateway*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
-    const loose  = `Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -notlike '*openclaw-panel*' -and $_.CommandLine -notlike '*server.js*' } | Select-Object -ExpandProperty ProcessId`;
-    const parse  = out => out.split('\n').map(s => s.trim()).filter(s => /^\d+$/.test(s));
-    exec(strict, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err, stdout) => {
-      const pids = (!err && stdout) ? parse(stdout) : [];
-      if (pids.length > 0) return callback(pids);
-      // 严格条件没找到，降级用宽松条件
-      exec(loose, { shell: 'powershell', windowsHide: true, timeout: 5000 }, (err2, stdout2) => {
-        callback((!err2 && stdout2) ? parse(stdout2) : []);
-      });
-    });
+  if (os.platform() === 'win32') {
+    findGatewayPidsWin(callback);
   } else {
-    exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', { timeout: 5000 }, (err, stdout) => {
-      if (err || !stdout) return callback([]);
-      callback(stdout.split('\n').map(s => s.trim()).filter(Boolean));
-    });
+    findGatewayPidsMac(callback);
   }
 }
 
-function killPids(pids, lines) {
+// ─── Windows：taskkill /F 强制终止 ──────────────────────────────
+function killPidsWin(pids, lines) {
   const { execSync } = require('child_process');
   pids.forEach(pid => {
     const pidInt = parseInt(pid);
     try {
+      // process.kill 在 Windows 上直接调用 TerminateProcess
       process.kill(pidInt);
       lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
     } catch (e) {
-      if (os.platform() === 'win32') {
-        // 用 execSync 确保 taskkill 完成后再继续，避免重启时进程还未退出
-        try {
-          execSync(`taskkill /F /PID ${pidInt}`, { windowsHide: true, timeout: 3000 });
-          lines.push(`[${ts()}] 强制终止进程 PID ${pid}`);
-        } catch (e2) {
-          lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e2.message}`);
-        }
-      } else {
-        lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e.message}`);
+      // 降级：execSync 确保 taskkill 同步完成再继续
+      try {
+        execSync(`taskkill /F /PID ${pidInt}`, { windowsHide: true, timeout: 3000 });
+        lines.push(`[${ts()}] 强制终止进程 PID ${pid}`);
+      } catch (e2) {
+        lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e2.message}`);
       }
     }
   });
+}
+
+// ─── macOS：先 SIGTERM，1s 后若仍存活则 SIGKILL ─────────────────
+function killPidsMac(pids, lines, done) {
+  const { execSync } = require('child_process');
+  // 先全部发 SIGTERM
+  pids.forEach(pid => {
+    try { process.kill(parseInt(pid), 'SIGTERM'); } catch {}
+  });
+  // 等 1s，检查哪些还活着，对它们补发 SIGKILL
+  setTimeout(() => {
+    pids.forEach(pid => {
+      const pidInt = parseInt(pid);
+      let alive = false;
+      try { process.kill(pidInt, 0); alive = true; } catch {}  // signal 0 仅探活不发信号
+      if (alive) {
+        try {
+          process.kill(pidInt, 'SIGKILL');
+          lines.push(`[${ts()}] 强制终止进程 PID ${pid} (SIGKILL)`);
+        } catch (e) {
+          lines.push(`[${ts()}] 终止进程 PID ${pid} 失败: ${e.message}`);
+        }
+      } else {
+        lines.push(`[${ts()}] 已停止进程 PID ${pid}`);
+      }
+    });
+    done();
+  }, 1000);
+}
+
+function killPids(pids, lines, done) {
+  if (os.platform() === 'win32') {
+    killPidsWin(pids, lines);
+    done();
+  } else {
+    killPidsMac(pids, lines, done);
+  }
 }
 
 // ─── 运维命令 Handler ────────────────────────
@@ -85,24 +132,30 @@ function handleCmdRestart(req, res) {
   findGatewayPids(pids => {
     if (pids.length > 0) {
       lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
-      killPids(pids, lines);
     } else {
       lines.push(`[${ts()}] 未找到运行中的进程，直接启动`);
     }
-    lines.push(`[${ts()}] 等待进程退出...`);
-    setTimeout(() => {
-      try {
-        const { cmd, shell } = getOcCmd('gateway run');
-        lines.push(`[${ts()}] 正在启动新实例...`);
-        const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
-        try { oc.unref(); } catch {}
-        lines.push(`[${ts()}] Gateway 已启动 (PID: ${oc.pid || '未知'})`);
-        respond({ success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
-      } catch (e) {
-        lines.push(`[${ts()}] 启动失败: ${e.message}`);
-        respond({ success: false, error: e.message, output: lines.join('\n') });
-      }
-    }, 2000);
+    const doStart = () => {
+      lines.push(`[${ts()}] 等待进程退出...`);
+      setTimeout(() => {
+        try {
+          const { cmd, shell } = getOcCmd('gateway run');
+          lines.push(`[${ts()}] 正在启动新实例...`);
+          const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
+          try { oc.unref(); } catch {}
+          lines.push(`[${ts()}] Gateway 已启动 (PID: ${oc.pid || '未知'})`);
+          respond({ success: true, message: 'Gateway 重启完成', output: lines.join('\n') });
+        } catch (e) {
+          lines.push(`[${ts()}] 启动失败: ${e.message}`);
+          respond({ success: false, error: e.message, output: lines.join('\n') });
+        }
+      }, 2000);
+    };
+    if (pids.length > 0) {
+      killPids(pids, lines, doStart);
+    } else {
+      doStart();
+    }
   });
 }
 
@@ -116,9 +169,10 @@ function handleCmdStop(req, res) {
       return respond({ success: true, message: '未找到 Gateway 进程', output: lines.join('\n') });
     }
     lines.push(`[${ts()}] 找到进程 PID: ${pids.join(', ')}`);
-    killPids(pids, lines);
-    lines.push(`[${ts()}] Gateway 已停止`);
-    respond({ success: true, message: 'Gateway 已停止', output: lines.join('\n') });
+    killPids(pids, lines, () => {
+      lines.push(`[${ts()}] Gateway 已停止`);
+      respond({ success: true, message: 'Gateway 已停止', output: lines.join('\n') });
+    });
   });
 }
 
