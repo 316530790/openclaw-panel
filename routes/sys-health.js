@@ -85,7 +85,8 @@ async function handleSysHealth(req, res) {
       const isWin = os.platform() === 'win32';
       if (isWin) {
         // PowerShell CimInstance 替代废弃的 wmic，输出 Unix 时间戳（秒）
-        const psCmd = `$p=Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' } | Sort-Object CreationDate | Select-Object -First 1; if($p){ [int64]($p.CreationDate.ToUniversalTime() - [datetime]'1970-01-01 00:00:00').TotalSeconds }`;
+        // 排除 openclaw-panel 自身；epoch 用显式 UTC 避免时区偏移
+        const psCmd = `$p=Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -notlike '*openclaw-panel*' } | Sort-Object CreationDate | Select-Object -First 1; if($p){ $epoch=[datetime]::new(1970,1,1,0,0,0,[System.DateTimeKind]::Utc); [int64]($p.CreationDate.ToUniversalTime()-$epoch).TotalSeconds }`;
         exec(psCmd, { shell: 'powershell', timeout: 5000, windowsHide: true }, (err, stdout) => {
           if (err || !stdout) return resolve(null);
           try {
