@@ -96,17 +96,23 @@ async function handleSysHealth(req, res) {
           } catch { resolve(null); }
         });
       } else {
-        exec(`pgrep -f "openclaw" | head -1`, { timeout: 3000 }, (err, pidRaw) => {
-          const pid = (pidRaw || '').trim();
-          if (err || !pid) return resolve(null);
-          exec(`ps -o lstart= -p ${pid}`, { timeout: 3000 }, (err2, lstart) => {
-            if (err2 || !lstart) return resolve(null);
-            try {
-              const startTime = new Date(lstart.trim()).getTime();
-              const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
-              resolve(uptimeSec > 0 ? uptimeSec : null);
-            } catch { resolve(null); }
+        // 优先找 openclaw gateway 进程，避免误匹配 openclaw-panel 自身
+        // 用 etimes 直接拿已运行秒数，不依赖日期格式解析
+        function findPidAndUptime(pattern, cb) {
+          exec(`pgrep -f "${pattern}" | head -1`, { timeout: 3000 }, (err, pidRaw) => {
+            const pid = (pidRaw || '').trim();
+            if (err || !pid) return cb(null);
+            exec(`ps -o etimes= -p ${pid}`, { timeout: 3000 }, (err2, out) => {
+              if (err2 || !out) return cb(null);
+              const sec = parseInt(out.trim());
+              cb(sec > 0 ? sec : null);
+            });
           });
+        }
+        // 先尝试找 gateway 子命令，再降级找任意 openclaw 进程（排除 panel 自身）
+        findPidAndUptime('openclaw.*gateway', sec => {
+          if (sec != null) return resolve(sec);
+          findPidAndUptime('openclaw', sec2 => resolve(sec2));
         });
       }
     });
