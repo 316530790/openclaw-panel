@@ -2,18 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const net = require('net');
 const os = require('os');
 const { exec } = require('child_process');
-const { readConfig } = require('../lib/config');
 const { readBody, sendJson } = require('../lib/http-utils');
 const { getOcCmd } = require('../lib/openclaw-bin');
+const { ts } = require('../lib/time-utils');
+const { probeGateway } = require('../lib/gateway-probe');
 
 const WATCHDOG_CONFIG_PATH = path.join(__dirname, '..', '.panel-watchdog.json');
-
-function ts() {
-  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
-}
 
 let _watchdog = { enabled: false, interval: 60 };
 let _watchdogState = { consecutiveMisses: 0, lastCheck: null, nextCheckAt: null, log: [], autoStartedAt: null, lastAutoStartMs: 0 };
@@ -42,23 +38,10 @@ function watchdogAddLog(msg) {
   console.log('[watchdog]', msg);
 }
 
-function probeGatewayPort() {
-  return new Promise(resolve => {
-    const cfg = readConfig();
-    const gwPort = (cfg && cfg.gateway && cfg.gateway.port) || 18789;
-    const sock = new net.Socket();
-    sock.setTimeout(800);
-    sock.once('connect', () => { sock.destroy(); resolve(true); });
-    sock.once('timeout', () => { sock.destroy(); resolve(false); });
-    sock.once('error', () => { sock.destroy(); resolve(false); });
-    sock.connect(gwPort, '127.0.0.1');
-  });
-}
-
 async function runWatchdogTick() {
   if (!_watchdog.enabled) return;
   _watchdogState.lastCheck = new Date().toISOString();
-  const alive = await probeGatewayPort();
+  const { alive } = await probeGateway();
   if (alive) {
     if (_watchdogState.consecutiveMisses > 0) {
       watchdogAddLog(`Gateway 恢复正常，计数清零`);
@@ -80,11 +63,14 @@ async function runWatchdogTick() {
           const oc = exec(cmd, { detached: true, stdio: 'ignore', windowsHide: true, shell });
           try { oc.unref(); } catch {}
           watchdogAddLog(`已发送启动命令 (PID: ${oc.pid || '未知'})`);
+          // 仅启动成功才重置计数，失败时保留计数以便下次继续触发
           _watchdogState.consecutiveMisses = 0;
           _watchdogState.lastAutoStartMs = Date.now();
           _watchdogState.autoStartedAt = new Date().toISOString();
         } catch (e) {
           watchdogAddLog(`自动启动失败: ${e.message}`);
+          // 启动失败：不重置计数，下次仍可立即重试（跳过冷却）
+          _watchdogState.lastAutoStartMs = 0;
         }
       }
     }

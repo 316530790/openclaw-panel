@@ -196,7 +196,18 @@ function pollUntilGateway(expectAlive, interval = 1000, maxAttempts = 15) {
   setTimeout(check, interval);
 }
 
-function quickRestart() {
+// 防重复点击：操作进行中时屏蔽所有快捷操作
+let _opsBusy = false;
+function _opsGuard(fn) {
+  return async function (...args) {
+    if (_opsBusy) { toast('操作进行中，请稍候', 'warn'); return; }
+    _opsBusy = true;
+    try { await fn(...args); }
+    finally { _opsBusy = false; }
+  };
+}
+
+const quickRestart = _opsGuard(function () {
   confirmDialog('重启 Gateway', '确定平滑重启 OpenClaw 网关主进程吗？', async () => {
     toast('正在重启 Gateway...', 'info');
     showOpsOutput('refresh', '重启日志', '正在执行...');
@@ -211,9 +222,9 @@ function quickRestart() {
       }
     } catch (e) { toast('重启请求失败: ' + e.message, 'error'); }
   }, true);
-}
+});
 
-function quickStop() {
+const quickStop = _opsGuard(function () {
   confirmDialog('停止 Gateway', '确定停止 OpenClaw 网关进程吗？停止后所有服务将不可用。', async () => {
     toast('正在停止 Gateway...', 'info');
     showOpsOutput('warning', '停止日志', '正在执行...');
@@ -228,10 +239,9 @@ function quickStop() {
       }
     } catch (e) { toast('停止请求失败: ' + e.message, 'error'); }
   }, true);
-}
+});
 
-async function quickStart() {
-  // 先检查当前状态，已在运行则提示，不重复启动
+const quickStart = _opsGuard(async function () {
   let health = {};
   try { health = await api('GET', '/api/sys-health') || {}; } catch {}
   if (health.gateway && health.gateway.alive) {
@@ -252,9 +262,9 @@ async function quickStart() {
       }
     } catch (e) { toast('启动请求失败: ' + e.message, 'error'); }
   });
-}
+});
 
-function quickDoctor() {
+const quickDoctor = _opsGuard(function () {
   confirmDialog('诊断修复', '确定执行 openclaw doctor --fix 进行配置修复吗？', async () => {
     toast('正在执行诊断...', 'info');
     const resultCard = document.getElementById('doctorResultCard');
@@ -274,20 +284,21 @@ function quickDoctor() {
       toast('诊断请求失败: ' + e.message, 'error');
     }
   });
-}
+});
 
-function quickDiagnostics() {
+const quickDiagnostics = _opsGuard(async function () {
   toast('正在获取稳定性诊断...', 'info');
-  showOpsOutput('chart', '稳定性诊断', '正在执行 openclaw gateway stability ...');
-  api('POST', '/api/cmd/diagnostics').then(data => {
+  showOpsOutput('cpu', '稳定性诊断', '正在执行 openclaw gateway stability ...');
+  try {
+    const data = await api('POST', '/api/cmd/diagnostics');
     const output = [data.stdout, data.stderr].filter(Boolean).join('\n') || (data.error || '无输出');
-    showOpsOutput('chart', '稳定性诊断', output);
+    showOpsOutput('cpu', '稳定性诊断', output);
     toast(data.success ? '诊断完成' : '诊断失败（Gateway 可能未运行）', data.success ? 'success' : 'warn');
-  }).catch(e => {
-    showOpsOutput('chart', '稳定性诊断', '请求失败: ' + e.message);
+  } catch (e) {
+    showOpsOutput('cpu', '稳定性诊断', '请求失败: ' + e.message);
     toast('诊断请求失败: ' + e.message, 'error');
-  });
-}
+  }
+});
 
 // 持久化保存升级前版本号, 刷新页面后仍可回退
 function _getPreUpgradeVersion() {
@@ -364,7 +375,6 @@ async function doUpgrade() {
       output += `\n✓ 升级完成！新版本: ${data.newVersion || '未知'}`;
       toast('升级完成！建议重启 Gateway', 'success');
       showOpsOutput('overview', '升级结果', output);
-      // 显示回退按钮
       const rollbackBtns = _getPreUpgradeVersion()
         ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_getPreUpgradeVersion()}')">回退到 ${_getPreUpgradeVersion()}</button>`
         : '';
@@ -373,7 +383,6 @@ async function doUpgrade() {
       output += `\n✗ 升级失败: ${data.error || '未知错误'}`;
       toast('升级失败', 'error');
       showOpsOutput('overview', '升级结果', output);
-      // 失败也显示回退和重试
       const btns = [
         `<button class="btn btn-primary btn-sm" id="doUpgradeBtn" onclick="doUpgrade()">重试</button>`,
         _getPreUpgradeVersion() ? `<button class="btn btn-sm" id="doRollbackBtn" onclick="doRollback('${_getPreUpgradeVersion()}')">回退到 ${_getPreUpgradeVersion()}</button>` : '',
@@ -383,6 +392,9 @@ async function doUpgrade() {
   } catch (e) {
     showOpsOutput('overview', '升级结果', '请求失败: ' + e.message);
     toast('升级请求失败: ' + e.message, 'error');
+    // 网络异常时恢复按钮，避免永久卡死
+    const b = document.getElementById('doUpgradeBtn');
+    if (b) { b.disabled = false; b.textContent = '一键升级'; }
   }
 }
 

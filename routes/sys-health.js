@@ -1,10 +1,9 @@
 'use strict';
 
 const os = require('os');
-const net = require('net');
 const { exec } = require('child_process');
-const { readConfig } = require('../lib/config');
 const { sendJson, sendError } = require('../lib/http-utils');
+const { probeGateway } = require('../lib/gateway-probe');
 
 // ─── 后台 CPU 采样缓存 ──────────────────────
 let _cachedCpuPct = 0;
@@ -62,20 +61,6 @@ async function handleSysHealth(req, res) {
           resolve(null);
         });
       }
-    });
-  }
-
-  // Gateway 探活
-  function probeGateway() {
-    return new Promise(resolve => {
-      const cfg = readConfig();
-      const gwPort = (cfg && cfg.gateway && cfg.gateway.port) || 18789;
-      const sock = new net.Socket();
-      sock.setTimeout(800);
-      sock.once('connect', () => { sock.destroy(); resolve({ alive: true, port: gwPort }); });
-      sock.once('timeout', () => { sock.destroy(); resolve({ alive: false, port: gwPort }); });
-      sock.once('error', () => { sock.destroy(); resolve({ alive: false, port: gwPort }); });
-      sock.connect(gwPort, '127.0.0.1');
     });
   }
 

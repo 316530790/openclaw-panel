@@ -7,6 +7,7 @@ const { exec } = require('child_process');
 const { readConfig } = require('../lib/config');
 const { readBody, sendJson, sendError } = require('../lib/http-utils');
 const { getOcCmd } = require('../lib/openclaw-bin');
+const { ts } = require('../lib/time-utils');
 
 // ─── macOS launchd 服务检测 ──────────────────
 // Gateway 在 Mac 上通常被注册为 launchd 服务（KeepAlive=true），kill 进程会被立刻重拉
@@ -19,10 +20,6 @@ function findLaunchdPlist() {
     const f = files.find(name => /openclaw.*gateway/i.test(name) && name.endsWith('.plist'));
     return f ? path.join(launchAgentsDir, f) : null;
   } catch { return null; }
-}
-
-function ts() {
-  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
 }
 
 // ─── 进程管理 ────────────────────────────────

@@ -458,7 +458,7 @@ async function quickRestart() {
 }
 
 async function quickStart() {
-  try { await api('POST', '/api/cmd/restart'); toast('启动命令已发送', 'success'); }
+  try { await api('POST', '/api/cmd/start'); toast('启动命令已发送', 'success'); }
   catch (e) { toast('操作失败: ' + e.message, 'error'); }
 }
 

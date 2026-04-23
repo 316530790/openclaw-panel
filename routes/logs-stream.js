@@ -9,6 +9,11 @@ const { findSessionDir } = require('../lib/session-utils');
 
 function handleLogsStream(req, res, params) {
   const agentId = params.get('agent') || 'main';
+  // 只允许字母、数字、连字符、下划线，防止路径穿越
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(agentId)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Invalid agentId');
+  }
   const cfg = readConfig();
   const agentCfg = cfg && cfg.agents && cfg.agents.list && cfg.agents.list.find(a => a.id === agentId);
   const sessionDir = findSessionDir(agentId, agentCfg);

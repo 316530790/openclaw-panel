@@ -510,4 +510,9 @@ function init() {
   navigate(initPage);
   pollHealth();
   healthTimer = setInterval(pollHealth, 10000);
+  // 页面卸载时清理 timer 和 SSE 连接，防止资源泄漏
+  window.addEventListener('beforeunload', () => {
+    if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+    if (logEventSource) { logEventSource.close(); logEventSource = null; }
+  });
 }
