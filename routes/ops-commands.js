@@ -379,6 +379,18 @@ function handleCmdUpgrade(req, res) {
   });
 }
 
+function handleCmdDiagnostics(req, res) {
+  const { cmd, shell } = getOcCmd('gateway stability');
+  exec(cmd, { timeout: 15000, shell }, (err, stdout, stderr) => {
+    sendJson(res, {
+      success: !err,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      error: err ? err.message : undefined,
+    });
+  });
+}
+
 function handleCmdDoUpgrade(req, res) {
   readBody(req).then(body => {
     const isWin = os.platform() === 'win32';
@@ -397,5 +409,5 @@ function handleCmdDoUpgrade(req, res) {
 
 module.exports = {
   handleCmdRestart, handleCmdStop, handleCmdStart,
-  handleCmdDoctor, handleCmdUpgrade, handleCmdDoUpgrade,
+  handleCmdDoctor, handleCmdUpgrade, handleCmdDoUpgrade, handleCmdDiagnostics,
 };

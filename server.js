@@ -24,7 +24,7 @@ const {
 } = require('./routes/config-crud');
 const { handleGetSessions, handleGetSessionMessages } = require('./routes/sessions');
 const { handleLogsStream } = require('./routes/logs-stream');
-const { handleCmdRestart, handleCmdStop, handleCmdStart, handleCmdDoctor, handleCmdUpgrade, handleCmdDoUpgrade } = require('./routes/ops-commands');
+const { handleCmdRestart, handleCmdStop, handleCmdStart, handleCmdDoctor, handleCmdUpgrade, handleCmdDoUpgrade, handleCmdDiagnostics } = require('./routes/ops-commands');
 const {
   handleGetMcp, handleSaveMcpServer, handleDeleteMcpServer,
   handleGetSandbox, handleSaveSandbox,
@@ -126,6 +126,7 @@ async function handleApi(req, res, pathname, params) {
   if (req.method === 'POST' && pathname === '/api/cmd/doctor') return handleCmdDoctor(req, res);
   if (req.method === 'POST' && pathname === '/api/cmd/upgrade') return handleCmdUpgrade(req, res);
   if (req.method === 'POST' && pathname === '/api/cmd/do-upgrade') return handleCmdDoUpgrade(req, res);
+  if (req.method === 'POST' && pathname === '/api/cmd/diagnostics') return handleCmdDiagnostics(req, res);
 
   // ── MCP ──
   if (req.method === 'GET' && pathname === '/api/mcp') return handleGetMcp(req, res);

@@ -18,7 +18,7 @@ async function renderQuickOps(container) {
           <div style="flex:1">
             <div id="qopsStatusTitle" style="font-size:15px;font-weight:650;margin-bottom:3px">${gwAlive ? 'Gateway 运行中' : 'Gateway 离线'}</div>
             <div id="qopsStatusDesc" style="font-size:12.5px;color:var(--text-muted)">
-              ${gwAlive ? `端口 ${gw.port || 18789} · 可执行操作命令` : '请先启动 OpenClaw Gateway'}
+              ${gwAlive ? `端口 ${gw.port || 18789} · 可执行操作命令 · <a href="https://app.openclaw.ai" target="_blank" rel="noopener" style="color:var(--brand);text-decoration:none;font-weight:500">OpenClaw 面板 ↗</a>` : '请先启动 OpenClaw Gateway'}
             </div>
           </div>
         </div>
@@ -73,6 +73,16 @@ async function renderQuickOps(container) {
           </div>
           <div style="font-size:14px;font-weight:600;margin-bottom:4px">检查更新</div>
           <div style="font-size:12px;color:var(--text-muted);line-height:1.5">获取 OpenClaw 最新版本</div>
+        </div>
+      </div>
+
+      <div class="card" style="cursor:pointer;transition:all 0.15s" onclick="quickDiagnostics()" onmouseenter="this.style.borderColor='rgba(139,92,246,0.28)';this.style.boxShadow='var(--shadow-md)'" onmouseleave="this.style.borderColor='';this.style.boxShadow=''">
+        <div class="card-body" style="padding:20px">
+          <div style="width:40px;height:40px;border-radius:var(--radius-md);background:rgba(139,92,246,0.1);display:flex;align-items:center;justify-content:center;margin-bottom:14px">
+            <svg width="20" height="20" style="color:#8b5cf6"><use href="#ico-cpu"/></svg>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:4px">稳定性诊断</div>
+          <div style="font-size:12px;color:var(--text-muted);line-height:1.5">查看 Gateway 近期运行状态</div>
         </div>
       </div>
     </div>
@@ -162,7 +172,11 @@ async function refreshQuickOpsStatus() {
   icon.style.background = gwAlive ? 'var(--green-bg)' : 'var(--bg-subtle)';
   dot.className = `status-dot ${gwAlive ? 'dot-online' : 'dot-offline'}`;
   title.textContent = gwAlive ? 'Gateway 运行中' : 'Gateway 离线';
-  desc.textContent = gwAlive ? `端口 ${gw.port || 18789} · 可执行操作命令` : '请先启动 OpenClaw Gateway';
+  if (gwAlive) {
+    desc.innerHTML = `端口 ${gw.port || 18789} · 可执行操作命令 · <a href="https://app.openclaw.ai" target="_blank" rel="noopener" style="color:var(--brand);text-decoration:none;font-weight:500">OpenClaw 面板 ↗</a>`;
+  } else {
+    desc.textContent = '请先启动 OpenClaw Gateway';
+  }
 
   if (typeof pollHealth === 'function') pollHealth();
   return gwAlive;
@@ -259,6 +273,19 @@ function quickDoctor() {
       if (doctorOut) doctorOut.textContent = '请求失败: ' + e.message;
       toast('诊断请求失败: ' + e.message, 'error');
     }
+  });
+}
+
+function quickDiagnostics() {
+  toast('正在获取稳定性诊断...', 'info');
+  showOpsOutput('chart', '稳定性诊断', '正在执行 openclaw gateway stability ...');
+  api('POST', '/api/cmd/diagnostics').then(data => {
+    const output = [data.stdout, data.stderr].filter(Boolean).join('\n') || (data.error || '无输出');
+    showOpsOutput('chart', '稳定性诊断', output);
+    toast(data.success ? '诊断完成' : '诊断失败（Gateway 可能未运行）', data.success ? 'success' : 'warn');
+  }).catch(e => {
+    showOpsOutput('chart', '稳定性诊断', '请求失败: ' + e.message);
+    toast('诊断请求失败: ' + e.message, 'error');
   });
 }
 
